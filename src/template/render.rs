@@ -75,8 +75,7 @@ mod tests {
 
     #[test]
     fn test_multiple_vars() {
-        let result =
-            render_template("{{a}} and {{b}}", &vars(&[("a", "X"), ("b", "Y")])).unwrap();
+        let result = render_template("{{a}} and {{b}}", &vars(&[("a", "X"), ("b", "Y")])).unwrap();
         assert_eq!(result, "X and Y");
     }
 
@@ -95,8 +94,7 @@ mod tests {
 
     #[test]
     fn test_trimmed_key() {
-        let result =
-            render_template("{{ name }}", &vars(&[("name", "trimmed")])).unwrap();
+        let result = render_template("{{ name }}", &vars(&[("name", "trimmed")])).unwrap();
         assert_eq!(result, "trimmed");
     }
 

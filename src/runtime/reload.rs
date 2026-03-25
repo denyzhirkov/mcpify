@@ -13,8 +13,7 @@ use std::time::Duration;
 pub async fn apply_reload(state: &Arc<AppState>, config_path: &PathBuf) -> Result<()> {
     tracing::info!("reload: reading config from {:?}", config_path);
 
-    let new_config =
-        load_config(Some(config_path)).context("reload: failed to load new config")?;
+    let new_config = load_config(Some(config_path)).context("reload: failed to load new config")?;
     validate(&new_config).context("reload: new config is invalid — keeping current state")?;
 
     let diff = {
@@ -107,9 +106,8 @@ pub async fn apply_reload(state: &Arc<AppState>, config_path: &PathBuf) -> Resul
 #[cfg(unix)]
 pub fn spawn_signal_handler(state: Arc<AppState>, config_path: PathBuf) {
     tokio::spawn(async move {
-        let mut signal =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
-                .expect("failed to register SIGHUP handler");
+        let mut signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+            .expect("failed to register SIGHUP handler");
         loop {
             signal.recv().await;
             tracing::info!("received SIGHUP, triggering reload");
@@ -127,8 +125,8 @@ pub fn spawn_file_watcher(state: Arc<AppState>, config_path: PathBuf) {
     let watch_path = config_path.clone();
     let (std_tx, std_rx) = std::sync::mpsc::channel::<DebounceEventResult>();
 
-    let mut debouncer = new_debouncer(Duration::from_millis(500), std_tx)
-        .expect("failed to create file watcher");
+    let mut debouncer =
+        new_debouncer(Duration::from_millis(500), std_tx).expect("failed to create file watcher");
 
     debouncer
         .watcher()

@@ -67,7 +67,7 @@ impl ManagedService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::model::{ServiceConfig, RestartPolicy};
+    use crate::config::model::{RestartPolicy, ServiceConfig};
     use std::collections::HashMap;
 
     fn test_service_config(name: &str) -> ServiceConfig {

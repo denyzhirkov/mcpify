@@ -72,13 +72,14 @@ pub fn validate(config: &McpifyConfig) -> Result<Vec<ValidationWarning>> {
         if svc.command.is_empty() {
             errors.push(format!("service '{}': missing 'command'", svc.name));
         }
-        if let Some(hc) = &svc.healthcheck {
-            if hc.check_type == crate::config::model::HealthcheckType::Http && hc.url.is_none() {
-                errors.push(format!(
-                    "service '{}': http healthcheck requires 'url'",
-                    svc.name
-                ));
-            }
+        if let Some(hc) = &svc.healthcheck
+            && hc.check_type == crate::config::model::HealthcheckType::Http
+            && hc.url.is_none()
+        {
+            errors.push(format!(
+                "service '{}': http healthcheck requires 'url'",
+                svc.name
+            ));
         }
     }
 

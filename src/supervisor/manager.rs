@@ -91,19 +91,17 @@ impl SupervisorManager {
 
         if let Some(handle) = &mut svc.handle {
             #[cfg(unix)]
-            if let Some(pid) = svc.pid {
-                if let Ok(raw_pid) = i32::try_from(pid) {
-                    if raw_pid > 0 {
-                        let _ = nix::sys::signal::kill(
-                            nix::unistd::Pid::from_raw(raw_pid),
-                            nix::sys::signal::Signal::SIGTERM,
-                        );
-                    }
-                }
+            if let Some(pid) = svc.pid
+                && let Ok(raw_pid) = i32::try_from(pid)
+                && raw_pid > 0
+            {
+                let _ = nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(raw_pid),
+                    nix::sys::signal::Signal::SIGTERM,
+                );
             }
 
-            let wait_result =
-                tokio::time::timeout(self.graceful_timeout, handle.wait()).await;
+            let wait_result = tokio::time::timeout(self.graceful_timeout, handle.wait()).await;
 
             match wait_result {
                 Ok(Ok(_)) => {
@@ -195,7 +193,11 @@ impl SupervisorManager {
             };
 
             if should_restart {
-                let restart_count = self.services.get(&name).map(|s| s.restart_count).unwrap_or(0);
+                let restart_count = self
+                    .services
+                    .get(&name)
+                    .map(|s| s.restart_count)
+                    .unwrap_or(0);
                 tracing::info!(service = %name, attempt = restart_count + 1, max = MAX_RESTARTS, "restarting service");
                 match self.start_service(&name).await {
                     Ok(()) => {

@@ -22,8 +22,8 @@ pub fn load_config(path: Option<&Path>) -> Result<McpifyConfig> {
         Some(p) => p.to_path_buf(),
         None => find_config_file()?,
     };
-    let content =
-        std::fs::read_to_string(&config_path).with_context(|| format!("reading {config_path:?}"))?;
+    let content = std::fs::read_to_string(&config_path)
+        .with_context(|| format!("reading {config_path:?}"))?;
     let config: McpifyConfig =
         serde_yaml::from_str(&content).with_context(|| format!("parsing {config_path:?}"))?;
     Ok(config)

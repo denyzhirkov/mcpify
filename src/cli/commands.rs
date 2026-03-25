@@ -60,10 +60,7 @@ pub async fn cmd_list(config_path: Option<&Path>) -> Result<()> {
     let config = load_config(config_path)?;
     let registry = ToolRegistry::from_config(&config);
 
-    println!(
-        "{:<20} {:<6} {:<40} {}",
-        "NAME", "TYPE", "DESCRIPTION", "TIMEOUT"
-    );
+    println!("{:<20} {:<6} {:<40} TIMEOUT", "NAME", "TYPE", "DESCRIPTION");
     println!("{}", "-".repeat(80));
     for entry in registry.list() {
         let t = &entry.config;
@@ -79,11 +76,7 @@ pub async fn cmd_list(config_path: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-pub async fn cmd_run(
-    config_path: Option<&Path>,
-    tool_name: &str,
-    input_json: &str,
-) -> Result<()> {
+pub async fn cmd_run(config_path: Option<&Path>, tool_name: &str, input_json: &str) -> Result<()> {
     let config = load_config(config_path)?;
     validate(&config)?;
     let registry = ToolRegistry::from_config(&config);
@@ -159,17 +152,11 @@ pub async fn cmd_serve(config_path: Option<&Path>, watch: bool) -> Result<()> {
 
     // Spawn SIGHUP reload handler
     #[cfg(unix)]
-    crate::runtime::reload::spawn_signal_handler(
-        Arc::clone(&state),
-        config_path_buf.clone(),
-    );
+    crate::runtime::reload::spawn_signal_handler(Arc::clone(&state), config_path_buf.clone());
 
     // Spawn file watcher if --watch
     if watch {
-        crate::runtime::reload::spawn_file_watcher(
-            Arc::clone(&state),
-            config_path_buf,
-        );
+        crate::runtime::reload::spawn_file_watcher(Arc::clone(&state), config_path_buf);
     }
 
     // Run MCP server (blocks until client disconnects)
@@ -190,20 +177,17 @@ pub async fn cmd_reload() -> Result<()> {
         anyhow::bail!("no running mcpify server found (PID file not found at {PID_FILE})");
     }
 
-    let pid_str = std::fs::read_to_string(pid_path)
-        .context("reading PID file")?;
-    let pid: i32 = pid_str
-        .trim()
-        .parse()
-        .context("parsing PID from file")?;
+    let pid_str = std::fs::read_to_string(pid_path).context("reading PID file")?;
+    let pid: i32 = pid_str.trim().parse().context("parsing PID from file")?;
 
     #[cfg(unix)]
     {
         use nix::sys::signal::{Signal, kill};
         use nix::unistd::Pid;
 
-        kill(Pid::from_raw(pid), Signal::SIGHUP)
-            .with_context(|| format!("failed to send SIGHUP to PID {pid} — process may not be running"))?;
+        kill(Pid::from_raw(pid), Signal::SIGHUP).with_context(|| {
+            format!("failed to send SIGHUP to PID {pid} — process may not be running")
+        })?;
         println!("Sent reload signal to mcpify (PID {pid})");
     }
 
@@ -221,10 +205,7 @@ pub async fn cmd_status(config_path: Option<&Path>) -> Result<()> {
     let registry = ToolRegistry::from_config(&config);
 
     println!("=== Tools ===");
-    println!(
-        "{:<20} {:<6} {:<12} {}",
-        "NAME", "TYPE", "STATUS", "DEPENDS_ON"
-    );
+    println!("{:<20} {:<6} {:<12} DEPENDS_ON", "NAME", "TYPE", "STATUS");
     println!("{}", "-".repeat(60));
     for entry in registry.list() {
         let t = &entry.config;
@@ -249,8 +230,8 @@ pub async fn cmd_status(config_path: Option<&Path>) -> Result<()> {
     if !config.services.is_empty() {
         println!("\n=== Services ===");
         println!(
-            "{:<20} {:<30} {:<10} {}",
-            "NAME", "COMMAND", "AUTOSTART", "HEALTHCHECK"
+            "{:<20} {:<30} {:<10} HEALTHCHECK",
+            "NAME", "COMMAND", "AUTOSTART"
         );
         println!("{}", "-".repeat(70));
         for svc in &config.services {
@@ -259,19 +240,16 @@ pub async fn cmd_status(config_path: Option<&Path>) -> Result<()> {
                 Some(h) => format!("{:?}", h.check_type),
                 None => "process".to_string(),
             };
-            println!(
-                "{:<20} {:<30} {:<10} {}",
-                svc.name, cmd, svc.autostart, hc
-            );
+            println!("{:<20} {:<30} {:<10} {}", svc.name, cmd, svc.autostart, hc);
         }
     }
 
     // Show if server is running
     let pid_path = Path::new(PID_FILE);
-    if pid_path.exists() {
-        if let Ok(pid) = std::fs::read_to_string(pid_path) {
-            println!("\nServer PID: {}", pid.trim());
-        }
+    if pid_path.exists()
+        && let Ok(pid) = std::fs::read_to_string(pid_path)
+    {
+        println!("\nServer PID: {}", pid.trim());
     }
 
     Ok(())
