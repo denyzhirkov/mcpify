@@ -1,18 +1,23 @@
 use crate::adapters::ToolResult;
 use crate::config::model::ToolConfig;
-use crate::template::render::{json_to_vars, render_template};
+use crate::template::render::{merge_vars, render_template};
 use anyhow::{Context, Result};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::time::Duration;
 use tokio::process::Command;
 
-pub async fn execute(tool: &ToolConfig, input: Value) -> Result<ToolResult> {
+pub async fn execute(
+    tool: &ToolConfig,
+    input: Value,
+    config_vars: &HashMap<String, String>,
+) -> Result<ToolResult> {
     let command = tool
         .command
         .as_ref()
         .context("exec tool missing 'command'")?;
 
-    let vars = json_to_vars(&input);
+    let vars = merge_vars(&input, config_vars);
 
     // Render each arg through template engine
     let mut rendered_args = Vec::with_capacity(tool.args.len());
@@ -77,18 +82,26 @@ mod tests {
             url: None,
             headers: HashMap::new(),
             body: None,
+            driver: None,
+            dsn: None,
+            query: None,
             timeout_ms,
             depends_on: vec![],
             enabled: true,
             input: None,
             retry: None,
+            annotations: None,
         }
+    }
+
+    fn empty_vars() -> HashMap<String, String> {
+        HashMap::new()
     }
 
     #[tokio::test]
     async fn test_exec_echo() {
         let tool = make_exec_tool("echo", vec!["hello"], 5000);
-        let result = execute(&tool, json!({})).await.unwrap();
+        let result = execute(&tool, json!({}), &empty_vars()).await.unwrap();
         assert!(!result.is_error);
         assert_eq!(result.stdout.trim(), "hello");
     }
@@ -96,14 +109,25 @@ mod tests {
     #[tokio::test]
     async fn test_exec_with_template() {
         let tool = make_exec_tool("echo", vec!["{{msg}}"], 5000);
-        let result = execute(&tool, json!({"msg": "world"})).await.unwrap();
+        let result = execute(&tool, json!({"msg": "world"}), &empty_vars())
+            .await
+            .unwrap();
         assert_eq!(result.stdout.trim(), "world");
+    }
+
+    #[tokio::test]
+    async fn test_exec_with_config_vars() {
+        let tool = make_exec_tool("echo", vec!["{{greeting}}"], 5000);
+        let mut cv = HashMap::new();
+        cv.insert("greeting".to_string(), "hola".to_string());
+        let result = execute(&tool, json!({}), &cv).await.unwrap();
+        assert_eq!(result.stdout.trim(), "hola");
     }
 
     #[tokio::test]
     async fn test_exec_timeout() {
         let tool = make_exec_tool("sleep", vec!["10"], 100);
-        let result = execute(&tool, json!({})).await;
+        let result = execute(&tool, json!({}), &empty_vars()).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("timeout"));
     }
@@ -111,7 +135,7 @@ mod tests {
     #[tokio::test]
     async fn test_exec_nonzero_exit() {
         let tool = make_exec_tool("false", vec![], 5000);
-        let result = execute(&tool, json!({})).await.unwrap();
+        let result = execute(&tool, json!({}), &empty_vars()).await.unwrap();
         assert!(result.is_error);
     }
 }

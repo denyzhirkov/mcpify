@@ -251,6 +251,8 @@ mod tests {
             supervisor: SupervisorConfig::default(),
             services,
             tools: vec![],
+            vars: HashMap::new(),
+            resources: vec![],
         }
     }
 

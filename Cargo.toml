@@ -15,6 +15,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rmcp = { version = "1", features = ["server", "transport-io"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "postgres"], default-features = false }
 libc = "0.2"
 nix = { version = "0.29", features = ["signal"] }
 notify = "7"

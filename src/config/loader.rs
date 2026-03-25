@@ -17,6 +17,24 @@ pub fn find_config_file() -> Result<PathBuf> {
     )
 }
 
+/// Resolve `${env:VAR_NAME}` references in var values.
+pub fn resolve_vars(vars: &mut std::collections::HashMap<String, String>) {
+    for value in vars.values_mut() {
+        if let Some(env_name) = value
+            .strip_prefix("${env:")
+            .and_then(|s| s.strip_suffix('}'))
+        {
+            match std::env::var(env_name) {
+                Ok(env_val) => *value = env_val,
+                Err(_) => {
+                    tracing::warn!(var = env_name, "env var not found, leaving empty");
+                    *value = String::new();
+                }
+            }
+        }
+    }
+}
+
 pub fn load_config(path: Option<&Path>) -> Result<McpifyConfig> {
     let config_path = match path {
         Some(p) => p.to_path_buf(),
@@ -24,8 +42,9 @@ pub fn load_config(path: Option<&Path>) -> Result<McpifyConfig> {
     };
     let content = std::fs::read_to_string(&config_path)
         .with_context(|| format!("reading {config_path:?}"))?;
-    let config: McpifyConfig =
+    let mut config: McpifyConfig =
         serde_yaml::from_str(&content).with_context(|| format!("parsing {config_path:?}"))?;
+    resolve_vars(&mut config.vars);
     Ok(config)
 }
 
@@ -59,5 +78,29 @@ tools:
         let mut f = NamedTempFile::new().unwrap();
         writeln!(f, "{{{{invalid yaml").unwrap();
         assert!(load_config(Some(f.path())).is_err());
+    }
+
+    #[test]
+    fn test_resolve_vars_env() {
+        // SAFETY: test runs single-threaded; no concurrent env access
+        unsafe { std::env::set_var("MCPIFY_TEST_VAR", "secret123") };
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("key".to_string(), "${env:MCPIFY_TEST_VAR}".to_string());
+        vars.insert("plain".to_string(), "hello".to_string());
+        resolve_vars(&mut vars);
+        assert_eq!(vars["key"], "secret123");
+        assert_eq!(vars["plain"], "hello");
+        unsafe { std::env::remove_var("MCPIFY_TEST_VAR") };
+    }
+
+    #[test]
+    fn test_resolve_vars_missing_env() {
+        let mut vars = std::collections::HashMap::new();
+        vars.insert(
+            "missing".to_string(),
+            "${env:MCPIFY_NONEXISTENT_VAR_XYZ}".to_string(),
+        );
+        resolve_vars(&mut vars);
+        assert_eq!(vars["missing"], "");
     }
 }

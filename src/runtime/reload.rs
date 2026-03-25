@@ -94,6 +94,11 @@ pub async fn apply_reload(state: &Arc<AppState>, config_path: &PathBuf) -> Resul
     }
 
     {
+        let mut vars = state.vars.write().await;
+        *vars = new_config.vars.clone();
+    }
+
+    {
         let mut config = state.current_config.write().await;
         *config = new_config;
     }

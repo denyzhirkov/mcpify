@@ -1,6 +1,6 @@
 use crate::adapters::ToolResult;
 use crate::config::model::{HttpMethod, ToolConfig};
-use crate::template::render::{json_to_vars, render_template};
+use crate::template::render::{merge_vars, render_template};
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -10,11 +10,12 @@ pub async fn execute(
     tool: &ToolConfig,
     input: Value,
     client: &reqwest::Client,
+    config_vars: &HashMap<String, String>,
 ) -> Result<ToolResult> {
     let url_template = tool.url.as_ref().context("http tool missing 'url'")?;
     let method = tool.method.as_ref().context("http tool missing 'method'")?;
 
-    let vars = json_to_vars(&input);
+    let vars = merge_vars(&input, config_vars);
     let url = render_template(url_template, &vars)?;
     let timeout = Duration::from_millis(tool.timeout_ms);
 

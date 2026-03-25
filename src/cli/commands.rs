@@ -67,6 +67,7 @@ pub async fn cmd_list(config_path: Option<&Path>) -> Result<()> {
         let type_str = match t.tool_type {
             ToolType::Exec => "exec",
             ToolType::Http => "http",
+            ToolType::Sql => "sql",
         };
         println!(
             "{:<20} {:<6} {:<40} {}ms",
@@ -89,11 +90,14 @@ pub async fn cmd_run(config_path: Option<&Path>, tool_name: &str, input_json: &s
         serde_json::from_str(input_json).context("parsing --input JSON")?;
 
     let result = match entry.config.tool_type {
-        ToolType::Exec => crate::adapters::exec::execute(&entry.config, input).await?,
+        ToolType::Exec => {
+            crate::adapters::exec::execute(&entry.config, input, &config.vars).await?
+        }
         ToolType::Http => {
             let client = reqwest::Client::new();
-            crate::adapters::http::execute(&entry.config, input, &client).await?
+            crate::adapters::http::execute(&entry.config, input, &client, &config.vars).await?
         }
+        ToolType::Sql => crate::adapters::sql::execute(&entry.config, input, &config.vars).await?,
     };
 
     if !result.stdout.is_empty() {
@@ -212,6 +216,7 @@ pub async fn cmd_status(config_path: Option<&Path>) -> Result<()> {
         let type_str = match t.tool_type {
             ToolType::Exec => "exec",
             ToolType::Http => "http",
+            ToolType::Sql => "sql",
         };
         let deps = if t.depends_on.is_empty() {
             "-".to_string()

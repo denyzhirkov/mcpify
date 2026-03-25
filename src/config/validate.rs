@@ -1,4 +1,4 @@
-use crate::config::model::{McpifyConfig, ToolType};
+use crate::config::model::{McpifyConfig, ResourceType, ToolType};
 use anyhow::Result;
 use std::collections::HashSet;
 
@@ -51,6 +51,17 @@ pub fn validate(config: &McpifyConfig) -> Result<Vec<ValidationWarning>> {
                     errors.push(format!("http tool '{}': missing 'method'", tool.name));
                 }
             }
+            ToolType::Sql => {
+                if tool.driver.is_none() {
+                    errors.push(format!("sql tool '{}': missing 'driver'", tool.name));
+                }
+                if tool.dsn.is_none() {
+                    errors.push(format!("sql tool '{}': missing 'dsn'", tool.name));
+                }
+                if tool.query.is_none() {
+                    errors.push(format!("sql tool '{}': missing 'query'", tool.name));
+                }
+            }
         }
 
         // Check depends_on references existing services
@@ -80,6 +91,41 @@ pub fn validate(config: &McpifyConfig) -> Result<Vec<ValidationWarning>> {
                 "service '{}': http healthcheck requires 'url'",
                 svc.name
             ));
+        }
+    }
+
+    // Validate resources
+    for res in &config.resources {
+        if res.uri.is_empty() {
+            errors.push(format!("resource '{}': empty URI", res.name));
+        }
+        match res.resource_type {
+            ResourceType::File => {
+                if res.path.is_none() {
+                    errors.push(format!("file resource '{}': missing 'path'", res.name));
+                }
+            }
+            ResourceType::Exec => {
+                if res.command.is_none() {
+                    errors.push(format!("exec resource '{}': missing 'command'", res.name));
+                }
+            }
+        }
+    }
+
+    // Warn about unresolved env var references in vars
+    for (name, value) in &config.vars {
+        if value.starts_with("${env:") && value.ends_with('}') {
+            // This means resolve_vars didn't replace it (shouldn't happen),
+            // but warn if the value is empty (env var was missing)
+            warnings.push(ValidationWarning {
+                message: format!("var '{}': env reference was not resolved", name),
+            });
+        }
+        if value.is_empty() {
+            warnings.push(ValidationWarning {
+                message: format!("var '{}': resolved to empty string", name),
+            });
         }
     }
 
@@ -180,5 +226,65 @@ tools:
         );
         let err = validate(&config).unwrap_err();
         assert!(err.to_string().contains("service not found"));
+    }
+
+    #[test]
+    fn test_sql_missing_driver() {
+        let config = parse(
+            r#"
+tools:
+  - name: broken
+    type: sql
+    dsn: "sqlite::memory:"
+    query: "SELECT 1"
+"#,
+        );
+        let err = validate(&config).unwrap_err();
+        assert!(err.to_string().contains("missing 'driver'"));
+    }
+
+    #[test]
+    fn test_sql_missing_dsn() {
+        let config = parse(
+            r#"
+tools:
+  - name: broken
+    type: sql
+    driver: sqlite
+    query: "SELECT 1"
+"#,
+        );
+        let err = validate(&config).unwrap_err();
+        assert!(err.to_string().contains("missing 'dsn'"));
+    }
+
+    #[test]
+    fn test_resource_file_missing_path() {
+        let config = parse(
+            r#"
+resources:
+  - name: readme
+    type: file
+    uri: "file:///README.md"
+tools: []
+"#,
+        );
+        let err = validate(&config).unwrap_err();
+        assert!(err.to_string().contains("missing 'path'"));
+    }
+
+    #[test]
+    fn test_resource_exec_missing_command() {
+        let config = parse(
+            r#"
+resources:
+  - name: version
+    type: exec
+    uri: "mcpify://version"
+tools: []
+"#,
+        );
+        let err = validate(&config).unwrap_err();
+        assert!(err.to_string().contains("missing 'command'"));
     }
 }

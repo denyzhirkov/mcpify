@@ -1,11 +1,12 @@
 use crate::adapters;
-use crate::config::model::ToolType;
+use crate::config::model::{ResourceType, ToolType};
 use crate::runtime::app_state::AppState;
 use crate::runtime::registry::ToolAvailability;
 use anyhow::Result;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Content, ListToolsResult, PaginatedRequestParams,
-    ServerCapabilities, ServerInfo, Tool,
+    CallToolRequestParams, CallToolResult, Content, ListResourcesResult, ListToolsResult,
+    PaginatedRequestParams, RawResource, ReadResourceRequestParams, ReadResourceResult, Resource,
+    ResourceContents, ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::{ServerHandler, service::ServiceExt};
 use serde_json::{Map, Value, json};
@@ -23,8 +24,21 @@ impl McpifyServer {
 
 impl ServerHandler for McpifyServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions("mcpify — config-driven MCP tool runtime")
+        let config = self.state.current_config.try_read();
+        let has_resources = config
+            .as_ref()
+            .map(|c| !c.resources.is_empty())
+            .unwrap_or(false);
+
+        let capabilities = if has_resources {
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build()
+        } else {
+            ServerCapabilities::builder().enable_tools().build()
+        };
+        ServerInfo::new(capabilities).with_instructions("mcpify — config-driven MCP tool runtime")
     }
 
     async fn list_tools(
@@ -47,11 +61,31 @@ impl ServerHandler for McpifyServer {
                 _ => serde_json::Map::new(),
             };
 
-            tools.push(Tool::new(
+            let mut tool = Tool::new(
                 config.name.clone(),
                 config.description.clone(),
                 Arc::new(input_schema),
-            ));
+            );
+
+            // Map config annotations to rmcp ToolAnnotations
+            if let Some(ann) = &config.annotations {
+                let mut rmcp_ann = rmcp::model::ToolAnnotations::new();
+                if let Some(v) = ann.read_only {
+                    rmcp_ann = rmcp_ann.read_only(v);
+                }
+                if let Some(v) = ann.destructive {
+                    rmcp_ann = rmcp_ann.destructive(v);
+                }
+                if let Some(v) = ann.idempotent {
+                    rmcp_ann = rmcp_ann.idempotent(v);
+                }
+                if let Some(v) = ann.open_world {
+                    rmcp_ann = rmcp_ann.open_world(v);
+                }
+                tool = tool.with_annotations(rmcp_ann);
+            }
+
+            tools.push(tool);
         }
 
         Ok(ListToolsResult {
@@ -107,11 +141,14 @@ impl ServerHandler for McpifyServer {
             }
         }
 
+        let vars = self.state.vars.read().await;
+
         let result = match config.tool_type {
-            ToolType::Exec => adapters::exec::execute(&config, input).await,
+            ToolType::Exec => adapters::exec::execute(&config, input, &vars).await,
             ToolType::Http => {
-                adapters::http::execute(&config, input, &self.state.http_client).await
+                adapters::http::execute(&config, input, &self.state.http_client, &vars).await
             }
+            ToolType::Sql => adapters::sql::execute(&config, input, &vars).await,
         };
 
         match result {
@@ -130,6 +167,86 @@ impl ServerHandler for McpifyServer {
                 "error: {e}"
             ))])),
         }
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> std::result::Result<ListResourcesResult, rmcp::ErrorData> {
+        let config = self.state.current_config.read().await;
+        let resources: Vec<Resource> = config
+            .resources
+            .iter()
+            .map(|r| {
+                let mut raw = RawResource::new(r.uri.clone(), r.name.clone());
+                if let Some(desc) = &r.description {
+                    raw = raw.with_description(desc.clone());
+                }
+                if let Some(mt) = &r.mime_type {
+                    raw = raw.with_mime_type(mt.clone());
+                }
+                Resource {
+                    raw,
+                    annotations: None,
+                }
+            })
+            .collect();
+
+        Ok(ListResourcesResult {
+            resources,
+            next_cursor: None,
+            meta: None,
+        })
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> std::result::Result<ReadResourceResult, rmcp::ErrorData> {
+        let config = self.state.current_config.read().await;
+        let resource = config
+            .resources
+            .iter()
+            .find(|r| r.uri == request.uri)
+            .ok_or_else(|| {
+                rmcp::ErrorData::resource_not_found(
+                    format!("resource not found: {}", request.uri),
+                    None,
+                )
+            })?;
+
+        let (text, mime) = match resource.resource_type {
+            ResourceType::File => {
+                let path = resource.path.as_deref().unwrap_or("");
+                let content = std::fs::read_to_string(path).map_err(|e| {
+                    rmcp::ErrorData::internal_error(
+                        format!("failed to read file {path}: {e}"),
+                        None,
+                    )
+                })?;
+                (content, resource.mime_type.clone())
+            }
+            ResourceType::Exec => {
+                let cmd = resource.command.as_deref().unwrap_or("");
+                let output = std::process::Command::new(cmd)
+                    .args(&resource.args)
+                    .output()
+                    .map_err(|e| {
+                        rmcp::ErrorData::internal_error(format!("failed to exec {cmd}: {e}"), None)
+                    })?;
+                let text = String::from_utf8_lossy(&output.stdout).to_string();
+                (text, resource.mime_type.clone())
+            }
+        };
+
+        let mut contents = ResourceContents::text(text, request.uri);
+        if let Some(mt) = mime {
+            contents = contents.with_mime_type(mt);
+        }
+
+        Ok(ReadResourceResult::new(vec![contents]))
     }
 }
 

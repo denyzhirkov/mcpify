@@ -45,8 +45,24 @@ pub fn render_template(template: &str, vars: &HashMap<String, Value>) -> Result<
 }
 
 /// Convert a flat JSON object to a HashMap<String, Value> for template rendering.
+#[allow(dead_code)]
 pub fn json_to_vars(input: &Value) -> HashMap<String, Value> {
     let mut vars = HashMap::new();
+    if let Value::Object(map) = input {
+        for (k, v) in map {
+            vars.insert(k.clone(), v.clone());
+        }
+    }
+    vars
+}
+
+/// Merge config-level vars with input vars. Input takes precedence.
+pub fn merge_vars(input: &Value, config_vars: &HashMap<String, String>) -> HashMap<String, Value> {
+    let mut vars: HashMap<String, Value> = config_vars
+        .iter()
+        .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+        .collect();
+    // Input overrides config vars
     if let Value::Object(map) = input {
         for (k, v) in map {
             vars.insert(k.clone(), v.clone());
@@ -118,5 +134,19 @@ mod tests {
         let v = json_to_vars(&input);
         assert_eq!(v.get("id"), Some(&json!("123")));
         assert_eq!(v.get("name"), Some(&json!("test")));
+    }
+
+    #[test]
+    fn test_merge_vars_input_overrides() {
+        let mut config_vars = HashMap::new();
+        config_vars.insert("base_url".to_string(), "http://localhost".to_string());
+        config_vars.insert("token".to_string(), "secret".to_string());
+
+        let input = json!({"token": "override", "id": "42"});
+        let merged = merge_vars(&input, &config_vars);
+
+        assert_eq!(merged["base_url"], json!("http://localhost"));
+        assert_eq!(merged["token"], json!("override")); // input wins
+        assert_eq!(merged["id"], json!("42"));
     }
 }

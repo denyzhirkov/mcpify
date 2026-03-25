@@ -1,5 +1,6 @@
 pub mod exec;
 pub mod http;
+pub mod sql;
 
 /// Result of executing a tool.
 #[derive(Debug, Clone)]
