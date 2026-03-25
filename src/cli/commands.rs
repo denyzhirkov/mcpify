@@ -49,9 +49,9 @@ pub async fn cmd_validate(config_path: Option<&Path>) -> Result<()> {
         eprintln!("warning: {}", w.message);
     }
     println!(
-        "Config is valid ({} tools, {} children)",
+        "Config is valid ({} tools, {} services)",
         config.tools.len(),
-        config.children.len()
+        config.services.len()
     );
     Ok(())
 }
@@ -129,7 +129,7 @@ pub async fn cmd_serve(config_path: Option<&Path>, watch: bool) -> Result<()> {
     tracing::info!(
         name = %config.server.name,
         tools = config.tools.len(),
-        children = config.children.len(),
+        services = config.services.len(),
         "starting mcpify server"
     );
 
@@ -137,7 +137,7 @@ pub async fn cmd_serve(config_path: Option<&Path>, watch: bool) -> Result<()> {
     let registry = ToolRegistry::from_config(&config);
     let mut supervisor = SupervisorManager::from_config(&config);
 
-    // Start children with autostart=true
+    // Start services with autostart=true
     supervisor.start_all().await?;
 
     let state = Arc::new(AppState::new(config, registry, supervisor));
@@ -176,7 +176,7 @@ pub async fn cmd_serve(config_path: Option<&Path>, watch: bool) -> Result<()> {
     let serve_result = mcp::run_stdio_server(Arc::clone(&state)).await;
 
     // Cleanup
-    tracing::info!("shutting down children");
+    tracing::info!("shutting down services");
     let mut sup = state.supervisor.write().await;
     sup.stop_all().await?;
     remove_pid_file();
@@ -246,22 +246,22 @@ pub async fn cmd_status(config_path: Option<&Path>) -> Result<()> {
         );
     }
 
-    if !config.children.is_empty() {
-        println!("\n=== Children ===");
+    if !config.services.is_empty() {
+        println!("\n=== Services ===");
         println!(
             "{:<20} {:<30} {:<10} {}",
             "NAME", "COMMAND", "AUTOSTART", "HEALTHCHECK"
         );
         println!("{}", "-".repeat(70));
-        for child in &config.children {
-            let cmd = format!("{} {}", child.command, child.args.join(" "));
-            let hc = match &child.healthcheck {
+        for svc in &config.services {
+            let cmd = format!("{} {}", svc.command, svc.args.join(" "));
+            let hc = match &svc.healthcheck {
                 Some(h) => format!("{:?}", h.check_type),
                 None => "process".to_string(),
             };
             println!(
                 "{:<20} {:<30} {:<10} {}",
-                child.name, cmd, child.autostart, hc
+                svc.name, cmd, svc.autostart, hc
             );
         }
     }

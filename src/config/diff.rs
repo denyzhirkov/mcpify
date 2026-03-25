@@ -8,9 +8,9 @@ pub struct ConfigDiff {
     pub removed_tools: Vec<String>,
     pub changed_tools: Vec<String>,
 
-    pub added_children: Vec<String>,
-    pub removed_children: Vec<String>,
-    pub changed_children: Vec<String>,
+    pub added_services: Vec<String>,
+    pub removed_services: Vec<String>,
+    pub changed_services: Vec<String>,
 }
 
 impl ConfigDiff {
@@ -18,9 +18,9 @@ impl ConfigDiff {
         self.added_tools.is_empty()
             && self.removed_tools.is_empty()
             && self.changed_tools.is_empty()
-            && self.added_children.is_empty()
-            && self.removed_children.is_empty()
-            && self.changed_children.is_empty()
+            && self.added_services.is_empty()
+            && self.removed_services.is_empty()
+            && self.changed_services.is_empty()
     }
 }
 
@@ -39,14 +39,14 @@ impl std::fmt::Display for ConfigDiff {
         if !self.changed_tools.is_empty() {
             parts.push(format!("~tools: {}", self.changed_tools.join(", ")));
         }
-        if !self.added_children.is_empty() {
-            parts.push(format!("+children: {}", self.added_children.join(", ")));
+        if !self.added_services.is_empty() {
+            parts.push(format!("+services: {}", self.added_services.join(", ")));
         }
-        if !self.removed_children.is_empty() {
-            parts.push(format!("-children: {}", self.removed_children.join(", ")));
+        if !self.removed_services.is_empty() {
+            parts.push(format!("-services: {}", self.removed_services.join(", ")));
         }
-        if !self.changed_children.is_empty() {
-            parts.push(format!("~children: {}", self.changed_children.join(", ")));
+        if !self.changed_services.is_empty() {
+            parts.push(format!("~services: {}", self.changed_services.join(", ")));
         }
         write!(f, "{}", parts.join("; "))
     }
@@ -76,22 +76,22 @@ pub fn diff_configs(old: &McpifyConfig, new: &McpifyConfig) -> ConfigDiff {
     }
 
     // Children diff
-    let old_children: HashSet<&str> = old.children.iter().map(|c| c.name.as_str()).collect();
-    let new_children: HashSet<&str> = new.children.iter().map(|c| c.name.as_str()).collect();
+    let old_services: HashSet<&str> = old.services.iter().map(|c| c.name.as_str()).collect();
+    let new_services: HashSet<&str> = new.services.iter().map(|c| c.name.as_str()).collect();
 
-    for name in new_children.difference(&old_children) {
-        diff.added_children.push(name.to_string());
+    for name in new_services.difference(&old_services) {
+        diff.added_services.push(name.to_string());
     }
-    for name in old_children.difference(&new_children) {
-        diff.removed_children.push(name.to_string());
+    for name in old_services.difference(&new_services) {
+        diff.removed_services.push(name.to_string());
     }
-    for name in old_children.intersection(&new_children) {
-        let old_child = old.children.iter().find(|c| c.name == *name).unwrap();
-        let new_child = new.children.iter().find(|c| c.name == *name).unwrap();
-        let old_val = serde_json::to_value(old_child).unwrap_or(Value::Null);
-        let new_val = serde_json::to_value(new_child).unwrap_or(Value::Null);
+    for name in old_services.intersection(&new_services) {
+        let old_svc = old.services.iter().find(|c| c.name == *name).unwrap();
+        let new_svc = new.services.iter().find(|c| c.name == *name).unwrap();
+        let old_val = serde_json::to_value(old_svc).unwrap_or(Value::Null);
+        let new_val = serde_json::to_value(new_svc).unwrap_or(Value::Null);
         if old_val != new_val {
-            diff.changed_children.push(name.to_string());
+            diff.changed_services.push(name.to_string());
         }
     }
 
@@ -201,24 +201,24 @@ tools:
     }
 
     #[test]
-    fn test_children_diff() {
+    fn test_services_diff() {
         let old = parse(
             r#"
-children:
+services:
   - name: svc1
     command: ./svc1
 "#,
         );
         let new = parse(
             r#"
-children:
+services:
   - name: svc2
     command: ./svc2
 "#,
         );
         let diff = diff_configs(&old, &new);
-        assert_eq!(diff.added_children, vec!["svc2"]);
-        assert_eq!(diff.removed_children, vec!["svc1"]);
+        assert_eq!(diff.added_services, vec!["svc2"]);
+        assert_eq!(diff.removed_services, vec!["svc1"]);
     }
 
     #[test]

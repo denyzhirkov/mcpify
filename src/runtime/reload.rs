@@ -2,7 +2,7 @@ use crate::config::diff::diff_configs;
 use crate::config::{load_config, validate};
 use crate::runtime::app_state::AppState;
 use crate::runtime::registry::ToolRegistry;
-use crate::supervisor::child::ChildProcess;
+use crate::supervisor::service::ManagedService;
 use anyhow::{Context, Result};
 use notify_debouncer_mini::{DebounceEventResult, new_debouncer};
 use std::path::PathBuf;
@@ -13,12 +13,10 @@ use std::time::Duration;
 pub async fn apply_reload(state: &Arc<AppState>, config_path: &PathBuf) -> Result<()> {
     tracing::info!("reload: reading config from {:?}", config_path);
 
-    // 1. Load and validate new config (before taking any locks)
     let new_config =
         load_config(Some(config_path)).context("reload: failed to load new config")?;
     validate(&new_config).context("reload: new config is invalid — keeping current state")?;
 
-    // 2. Compute diff (short-lived read lock)
     let diff = {
         let old_config = state.current_config.read().await;
         diff_configs(&old_config, &new_config)
@@ -31,72 +29,64 @@ pub async fn apply_reload(state: &Arc<AppState>, config_path: &PathBuf) -> Resul
 
     tracing::info!("reload: {diff}");
 
-    // 3-7. Apply all supervisor changes under a single write lock
-    // This prevents partial state between steps.
     let supervisor_result = {
         let mut supervisor = state.supervisor.write().await;
+        let mut started_services: Vec<String> = Vec::new();
 
-        // Track what we successfully started so we can rollback on failure
-        let mut started_children: Vec<String> = Vec::new();
-
-        // Step 3: Start new children
-        for name in &diff.added_children {
-            if let Some(child_cfg) = new_config.children.iter().find(|c| c.name == *name) {
+        // Start new services
+        for name in &diff.added_services {
+            if let Some(svc_cfg) = new_config.services.iter().find(|s| s.name == *name) {
                 supervisor
-                    .children_mut()
-                    .insert(name.clone(), ChildProcess::new(child_cfg.clone()));
-                if let Err(e) = supervisor.start_child(name).await {
-                    tracing::error!(child = %name, error = %e, "reload: failed to start new child");
-                    // Rollback: stop children we already started in this reload
-                    for started in &started_children {
-                        let _ = supervisor.stop_child(started).await;
-                        supervisor.children_mut().remove(started);
+                    .services_mut()
+                    .insert(name.clone(), ManagedService::new(svc_cfg.clone()));
+                if let Err(e) = supervisor.start_service(name).await {
+                    tracing::error!(service = %name, error = %e, "reload: failed to start new service");
+                    for started in &started_services {
+                        let _ = supervisor.stop_service(started).await;
+                        supervisor.services_mut().remove(started);
                     }
-                    anyhow::bail!("reload aborted: failed to start child '{name}': {e}");
+                    anyhow::bail!("reload aborted: failed to start service '{name}': {e}");
                 }
-                started_children.push(name.clone());
+                started_services.push(name.clone());
             }
         }
 
-        // Step 4: Brief wait + health check for new children
-        if !diff.added_children.is_empty() {
-            // Release lock briefly to allow health check HTTP requests
+        // Brief wait + health check for new services
+        if !diff.added_services.is_empty() {
             drop(supervisor);
             tokio::time::sleep(Duration::from_millis(500)).await;
             supervisor = state.supervisor.write().await;
             supervisor.run_health_checks().await;
         }
 
-        // Step 5: Restart changed children (stop old, start new)
-        for name in &diff.changed_children {
-            tracing::info!(child = %name, "reload: restarting changed child");
-            let _ = supervisor.stop_child(name).await;
-            supervisor.children_mut().remove(name);
+        // Restart changed services
+        for name in &diff.changed_services {
+            tracing::info!(service = %name, "reload: restarting changed service");
+            let _ = supervisor.stop_service(name).await;
+            supervisor.services_mut().remove(name);
 
-            if let Some(child_cfg) = new_config.children.iter().find(|c| c.name == *name) {
+            if let Some(svc_cfg) = new_config.services.iter().find(|s| s.name == *name) {
                 supervisor
-                    .children_mut()
-                    .insert(name.clone(), ChildProcess::new(child_cfg.clone()));
-                if let Err(e) = supervisor.start_child(name).await {
-                    tracing::error!(child = %name, error = %e, "reload: restart failed — child left stopped");
+                    .services_mut()
+                    .insert(name.clone(), ManagedService::new(svc_cfg.clone()));
+                if let Err(e) = supervisor.start_service(name).await {
+                    tracing::error!(service = %name, error = %e, "reload: restart failed — service left stopped");
                 }
             }
         }
 
-        // Step 6: Stop removed children
-        for name in &diff.removed_children {
-            tracing::info!(child = %name, "reload: stopping removed child");
-            let _ = supervisor.stop_child(name).await;
-            supervisor.children_mut().remove(name);
+        // Stop removed services
+        for name in &diff.removed_services {
+            tracing::info!(service = %name, "reload: stopping removed service");
+            let _ = supervisor.stop_service(name).await;
+            supervisor.services_mut().remove(name);
         }
 
         Ok::<(), anyhow::Error>(())
     };
 
-    // If supervisor changes failed, don't update registry or config
     supervisor_result?;
 
-    // Step 7: Update tool registry
     {
         let new_registry = ToolRegistry::from_config(&new_config);
         let mut registry = state.registry.write().await;
@@ -104,7 +94,6 @@ pub async fn apply_reload(state: &Arc<AppState>, config_path: &PathBuf) -> Resul
         tracing::info!("reload: registry updated ({} tools)", registry.list().len());
     }
 
-    // Step 8: Update stored config and generation (only on full success)
     {
         let mut config = state.current_config.write().await;
         *config = new_config;
@@ -148,9 +137,8 @@ pub fn spawn_file_watcher(state: Arc<AppState>, config_path: PathBuf) {
 
     tracing::info!(path = ?config_path, "file watcher enabled");
 
-    // Bridge thread: std mpsc → tokio mpsc
     std::thread::spawn(move || {
-        let _debouncer = debouncer; // keep alive
+        let _debouncer = debouncer;
         while let Ok(event) = std_rx.recv() {
             match event {
                 Ok(_events) => {

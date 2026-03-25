@@ -10,7 +10,7 @@ pub struct McpifyConfig {
     pub supervisor: SupervisorConfig,
 
     #[serde(default)]
-    pub children: Vec<ChildConfig>,
+    pub services: Vec<ServiceConfig>,
 
     #[serde(default)]
     pub tools: Vec<ToolConfig>,
@@ -93,7 +93,7 @@ pub enum RestartPolicy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChildConfig {
+pub struct ServiceConfig {
     pub name: String,
     pub command: String,
 
@@ -283,7 +283,7 @@ supervisor:
   healthcheck_interval_ms: 3000
   graceful_shutdown_timeout_ms: 5000
 
-children:
+services:
   - name: local_api
     command: ./bin/local-api
     args: ["--port", "3010"]
@@ -342,10 +342,10 @@ tools:
 
         assert_eq!(config.server.name, "my-mcp-runtime");
         assert_eq!(config.server.transport, "stdio");
-        assert_eq!(config.children.len(), 1);
-        assert_eq!(config.children[0].name, "local_api");
-        assert_eq!(config.children[0].command, "./bin/local-api");
-        assert!(config.children[0].healthcheck.is_some());
+        assert_eq!(config.services.len(), 1);
+        assert_eq!(config.services[0].name, "local_api");
+        assert_eq!(config.services[0].command, "./bin/local-api");
+        assert!(config.services[0].healthcheck.is_some());
 
         assert_eq!(config.tools.len(), 3);
         assert_eq!(config.tools[0].name, "git_status");

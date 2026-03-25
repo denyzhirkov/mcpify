@@ -1,9 +1,9 @@
-use crate::config::model::ChildConfig;
+use crate::config::model::ServiceConfig;
 use std::time::Instant;
 use tokio::process::Child;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChildState {
+pub enum ServiceState {
     Starting,
     Online,
     Degraded,
@@ -11,7 +11,7 @@ pub enum ChildState {
     Failed,
 }
 
-impl std::fmt::Display for ChildState {
+impl std::fmt::Display for ServiceState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Starting => write!(f, "starting"),
@@ -23,9 +23,9 @@ impl std::fmt::Display for ChildState {
     }
 }
 
-pub struct ChildProcess {
-    pub config: ChildConfig,
-    pub state: ChildState,
+pub struct ManagedService {
+    pub config: ServiceConfig,
+    pub state: ServiceState,
     pub handle: Option<Child>,
     pub pid: Option<u32>,
     pub started_at: Option<Instant>,
@@ -33,11 +33,11 @@ pub struct ChildProcess {
     pub restart_count: u32,
 }
 
-impl ChildProcess {
-    pub fn new(config: ChildConfig) -> Self {
+impl ManagedService {
+    pub fn new(config: ServiceConfig) -> Self {
         Self {
             config,
-            state: ChildState::Stopped,
+            state: ServiceState::Stopped,
             handle: None,
             pid: None,
             started_at: None,
@@ -49,8 +49,8 @@ impl ChildProcess {
     pub fn is_alive(&mut self) -> bool {
         if let Some(handle) = &mut self.handle {
             match handle.try_wait() {
-                Ok(None) => true,  // still running
-                Ok(Some(_)) => false, // exited
+                Ok(None) => true,
+                Ok(Some(_)) => false,
                 Err(_) => false,
             }
         } else {
@@ -67,11 +67,11 @@ impl ChildProcess {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::model::{ChildConfig, RestartPolicy};
+    use crate::config::model::{ServiceConfig, RestartPolicy};
     use std::collections::HashMap;
 
-    fn test_child_config(name: &str) -> ChildConfig {
-        ChildConfig {
+    fn test_service_config(name: &str) -> ServiceConfig {
+        ServiceConfig {
             name: name.to_string(),
             command: "sleep".to_string(),
             args: vec!["60".to_string()],
@@ -85,16 +85,16 @@ mod tests {
 
     #[test]
     fn test_initial_state() {
-        let child = ChildProcess::new(test_child_config("test"));
-        assert_eq!(child.state, ChildState::Stopped);
-        assert!(child.handle.is_none());
-        assert!(child.pid.is_none());
-        assert_eq!(child.restart_count, 0);
+        let svc = ManagedService::new(test_service_config("test"));
+        assert_eq!(svc.state, ServiceState::Stopped);
+        assert!(svc.handle.is_none());
+        assert!(svc.pid.is_none());
+        assert_eq!(svc.restart_count, 0);
     }
 
     #[test]
     fn test_display() {
-        assert_eq!(format!("{}", ChildState::Online), "online");
-        assert_eq!(format!("{}", ChildState::Failed), "failed");
+        assert_eq!(format!("{}", ServiceState::Online), "online");
+        assert_eq!(format!("{}", ServiceState::Failed), "failed");
     }
 }

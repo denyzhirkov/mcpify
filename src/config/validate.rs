@@ -19,11 +19,11 @@ pub fn validate(config: &McpifyConfig) -> Result<Vec<ValidationWarning>> {
         }
     }
 
-    // Check child name uniqueness
-    let mut child_names = HashSet::new();
-    for child in &config.children {
-        if !child_names.insert(&child.name) {
-            errors.push(format!("duplicate child name: {}", child.name));
+    // Check service name uniqueness
+    let mut service_names = HashSet::new();
+    for svc in &config.services {
+        if !service_names.insert(&svc.name) {
+            errors.push(format!("duplicate service name: {}", svc.name));
         }
     }
 
@@ -53,30 +53,30 @@ pub fn validate(config: &McpifyConfig) -> Result<Vec<ValidationWarning>> {
             }
         }
 
-        // Check depends_on references existing children
+        // Check depends_on references existing services
         for dep in &tool.depends_on {
-            if !child_names.contains(dep) {
+            if !service_names.contains(dep) {
                 errors.push(format!(
-                    "tool '{}': depends_on '{}' — child not found",
+                    "tool '{}': depends_on '{}' — service not found",
                     tool.name, dep
                 ));
             }
         }
     }
 
-    // Validate children
-    for child in &config.children {
-        if child.name.is_empty() {
-            errors.push("child has empty name".to_string());
+    // Validate services
+    for svc in &config.services {
+        if svc.name.is_empty() {
+            errors.push("service has empty name".to_string());
         }
-        if child.command.is_empty() {
-            errors.push(format!("child '{}': missing 'command'", child.name));
+        if svc.command.is_empty() {
+            errors.push(format!("service '{}': missing 'command'", svc.name));
         }
-        if let Some(hc) = &child.healthcheck {
+        if let Some(hc) = &svc.healthcheck {
             if hc.check_type == crate::config::model::HealthcheckType::Http && hc.url.is_none() {
                 errors.push(format!(
-                    "child '{}': http healthcheck requires 'url'",
-                    child.name
+                    "service '{}': http healthcheck requires 'url'",
+                    svc.name
                 ));
             }
         }
@@ -166,7 +166,7 @@ tools:
     }
 
     #[test]
-    fn test_depends_on_unknown_child() {
+    fn test_depends_on_unknown_service() {
         let config = parse(
             r#"
 tools:
@@ -178,6 +178,6 @@ tools:
 "#,
         );
         let err = validate(&config).unwrap_err();
-        assert!(err.to_string().contains("child not found"));
+        assert!(err.to_string().contains("service not found"));
     }
 }

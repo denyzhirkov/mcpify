@@ -99,7 +99,7 @@ impl ServerHandler for McpifyServer {
         if !depends_on.is_empty() {
             let supervisor = self.state.supervisor.read().await;
             for dep in &depends_on {
-                if !supervisor.is_child_online(dep) {
+                if !supervisor.is_service_online(dep) {
                     return Ok(CallToolResult::error(vec![Content::text(format!(
                         "dependency '{dep}' is not online"
                     ))]));

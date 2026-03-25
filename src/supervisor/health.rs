@@ -1,5 +1,5 @@
 use crate::config::model::HealthcheckType;
-use crate::supervisor::child::ChildProcess;
+use crate::supervisor::service::ManagedService;
 use std::time::Duration;
 
 #[derive(Debug)]
@@ -9,14 +9,12 @@ pub enum HealthResult {
     ProcessDead,
 }
 
-pub async fn check_health(child: &mut ChildProcess, client: &reqwest::Client) -> HealthResult {
-    // First check if process is alive
-    if !child.is_alive() {
+pub async fn check_health(svc: &mut ManagedService, client: &reqwest::Client) -> HealthResult {
+    if !svc.is_alive() {
         return HealthResult::ProcessDead;
     }
 
-    // If no healthcheck configured, process alive = healthy
-    let hc = match &child.config.healthcheck {
+    let hc = match &svc.config.healthcheck {
         Some(hc) => hc,
         None => return HealthResult::Healthy,
     };
@@ -36,9 +34,6 @@ pub async fn check_health(child: &mut ChildProcess, client: &reqwest::Client) ->
                 Err(e) => HealthResult::Unhealthy(format!("healthcheck failed: {e}")),
             }
         }
-        HealthcheckType::Process => {
-            // Process-only: alive check already passed above
-            HealthResult::Healthy
-        }
+        HealthcheckType::Process => HealthResult::Healthy,
     }
 }

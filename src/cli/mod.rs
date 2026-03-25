@@ -35,7 +35,7 @@ pub enum Commands {
     /// List registered tools
     List,
 
-    /// Show tools, children, and health status
+    /// Show tools, services, and health status
     Status,
 
     /// Run a tool locally
