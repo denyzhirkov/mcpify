@@ -76,6 +76,7 @@ pub async fn execute(
                         },
                         exit_code: Some(status.as_u16() as i32),
                         is_error,
+                        structured: None,
                     });
                 }
 
@@ -97,6 +98,7 @@ pub async fn execute(
                     stderr: format!("HTTP {status}"),
                     exit_code: Some(status.as_u16() as i32),
                     is_error: true,
+                    structured: None,
                 });
             }
             Err(e) => {

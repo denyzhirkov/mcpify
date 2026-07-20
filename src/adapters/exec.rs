@@ -59,6 +59,7 @@ pub async fn execute(
         stderr,
         exit_code,
         is_error,
+        structured: None,
     })
 }
 
@@ -91,6 +92,7 @@ mod tests {
             input: None,
             retry: None,
             annotations: None,
+            output: None,
         }
     }
 

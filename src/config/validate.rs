@@ -58,7 +58,9 @@ pub fn validate(config: &McpifyConfig) -> Result<Vec<ValidationWarning>> {
                 if tool.dsn.is_none() {
                     errors.push(format!("sql tool '{}': missing 'dsn'", tool.name));
                 }
-                if tool.query.is_none() {
+                if let Some(query) = &tool.query {
+                    check_sql_bind_placeholders(&tool.name, query, &mut errors);
+                } else {
                     errors.push(format!("sql tool '{}': missing 'query'", tool.name));
                 }
             }
@@ -142,6 +144,33 @@ pub fn validate(config: &McpifyConfig) -> Result<Vec<ValidationWarning>> {
         Ok(warnings)
     } else {
         anyhow::bail!("config validation failed:\n  - {}", errors.join("\n  - "))
+    }
+}
+
+/// A bind placeholder (`{{var}}`, not `{{raw:...}}`) wrapped in a quote is a
+/// leftover from the old string-interpolation style — under bind parameters it
+/// would emit a literal `'?'`. Flag it with a migration hint.
+fn check_sql_bind_placeholders(tool_name: &str, query: &str, errors: &mut Vec<String>) {
+    let bytes = query.as_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'{' && bytes[i + 1] == b'{' {
+            let start = i + 2;
+            let Some(rel) = query[start..].find("}}") else {
+                break; // unclosed — runtime reports it
+            };
+            let key = query[start..start + rel].trim();
+            let is_raw = key.starts_with("raw:");
+            let prev = query[..i].chars().last();
+            if !is_raw && matches!(prev, Some('\'') | Some('"')) {
+                errors.push(format!(
+                    "sql tool '{tool_name}': bind placeholder {{{{{key}}}}} is wrapped in quotes — remove the quotes, values are bound automatically"
+                ));
+            }
+            i = start + rel + 2;
+        } else {
+            i += 1;
+        }
     }
 }
 
@@ -271,6 +300,37 @@ tools: []
         );
         let err = validate(&config).unwrap_err();
         assert!(err.to_string().contains("missing 'path'"));
+    }
+
+    #[test]
+    fn test_sql_quoted_bind_placeholder_rejected() {
+        let config = parse(
+            r#"
+tools:
+  - name: q
+    type: sql
+    driver: sqlite
+    dsn: "sqlite::memory:"
+    query: "SELECT * FROM t WHERE name = '{{name}}'"
+"#,
+        );
+        let err = validate(&config).unwrap_err();
+        assert!(err.to_string().contains("wrapped in quotes"));
+    }
+
+    #[test]
+    fn test_sql_unquoted_bind_and_raw_ok() {
+        let config = parse(
+            r#"
+tools:
+  - name: q
+    type: sql
+    driver: sqlite
+    dsn: "sqlite::memory:"
+    query: "SELECT * FROM {{raw:table}} WHERE name = {{name}}"
+"#,
+        );
+        assert!(validate(&config).is_ok());
     }
 
     #[test]

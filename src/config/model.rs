@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -220,6 +221,9 @@ pub struct ToolConfig {
 
     #[serde(default)]
     pub annotations: Option<ToolAnnotations>,
+
+    #[serde(default)]
+    pub output: Option<OutputSchema>,
 }
 
 fn default_tool_timeout() -> u64 {
@@ -310,6 +314,8 @@ pub enum HttpMethod {
     Delete,
 }
 
+/// Serializes directly as a JSON Schema `object` — `build_input_schema` just
+/// calls `serde_json::to_value` on it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InputSchema {
     #[serde(rename = "type", default = "default_object_type")]
@@ -318,7 +324,7 @@ pub struct InputSchema {
     #[serde(default)]
     pub properties: HashMap<String, PropertyDef>,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required: Vec<String>,
 }
 
@@ -326,13 +332,55 @@ fn default_object_type() -> String {
     "object".to_string()
 }
 
+/// A JSON Schema property. Structural keywords are first-class; every other
+/// keyword (minimum, maximum, pattern, format, minLength, …) passes through
+/// `extra` verbatim via `#[serde(flatten)]`. The field layout is the on-wire
+/// JSON Schema, so serializing a `PropertyDef` yields a valid schema fragment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PropertyDef {
     #[serde(rename = "type")]
     pub prop_type: String,
 
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<Value>,
+
+    #[serde(rename = "enum", default, skip_serializing_if = "Option::is_none")]
+    pub enum_values: Option<Vec<Value>>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items: Option<Box<PropertyDef>>,
+
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub properties: HashMap<String, PropertyDef>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required: Vec<String>,
+
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// Declared output shape for a tool. `schema` is advertised as the MCP
+/// `outputSchema`; `parse` controls how exec/http stdout becomes
+/// `structuredContent` (sql produces rows natively, ignoring `parse`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OutputSchema {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<Value>,
+
+    #[serde(default)]
+    pub parse: OutputParse,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum OutputParse {
+    #[default]
+    Text,
+    Json,
 }
 
 #[cfg(test)]
