@@ -49,12 +49,17 @@ There are three core concepts: **tools**, **services**, and **resources**.
 
 ## Variables and secrets
 
-Define shared variables in the config. Use `${env:VAR}` to read from environment — secrets never pass through the agent.
+Define shared variables in the config. Values support these sources — secrets never pass through the agent:
+
+- `${env:VAR}` — environment variable (empty if unset)
+- `${env:VAR:-default}` — environment variable, or `default` when unset/empty
+- `${file:path}` — file contents (trailing whitespace trimmed) — handy for Docker/K8s secret files
 
 ```yaml
 vars:
   api_token: ${env:GITHUB_TOKEN}
-  base_url: https://api.github.com
+  base_url: ${env:BASE_URL:-https://api.github.com}
+  db_password: ${file:/run/secrets/db_password}
   db_url: ${env:DATABASE_URL}
 
 tools:
@@ -499,8 +504,10 @@ server:
   log_level: info         # trace, debug, info, warn, error
 
 vars:
-  key: value                   # plain value
-  secret: ${env:SECRET_KEY}    # from environment variable
+  key: value                        # plain value
+  secret: ${env:SECRET_KEY}         # from environment variable
+  host: ${env:HOST:-localhost}      # env with default fallback
+  token: ${file:/run/secrets/tok}   # from a file (trailing whitespace trimmed)
 
 supervisor:
   restart_policy: on-failure

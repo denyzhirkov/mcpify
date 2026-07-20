@@ -17,20 +17,41 @@ pub fn find_config_file() -> Result<PathBuf> {
     )
 }
 
-/// Resolve `${env:VAR_NAME}` references in var values.
+/// Resolve source references in var values:
+/// - `${env:NAME}` — environment variable, else empty (+ warn)
+/// - `${env:NAME:-default}` — environment variable if set & non-empty, else `default`
+/// - `${file:path}` — file contents (trailing whitespace trimmed), else empty (+ warn)
 pub fn resolve_vars(vars: &mut std::collections::HashMap<String, String>) {
     for value in vars.values_mut() {
-        if let Some(env_name) = value
+        if let Some(inner) = value
             .strip_prefix("${env:")
             .and_then(|s| s.strip_suffix('}'))
         {
-            match std::env::var(env_name) {
-                Ok(env_val) => *value = env_val,
-                Err(_) => {
-                    tracing::warn!(var = env_name, "env var not found, leaving empty");
-                    *value = String::new();
+            let (name, default) = match inner.split_once(":-") {
+                Some((name, default)) => (name, Some(default)),
+                None => (inner, None),
+            };
+            *value = match std::env::var(name) {
+                Ok(env_val) if !env_val.is_empty() => env_val,
+                _ => match default {
+                    Some(d) => d.to_string(),
+                    None => {
+                        tracing::warn!(var = name, "env var not found, leaving empty");
+                        String::new()
+                    }
+                },
+            };
+        } else if let Some(path) = value
+            .strip_prefix("${file:")
+            .and_then(|s| s.strip_suffix('}'))
+        {
+            *value = match std::fs::read_to_string(path) {
+                Ok(contents) => contents.trim_end().to_string(),
+                Err(e) => {
+                    tracing::warn!(path, error = %e, "file var not readable, leaving empty");
+                    String::new()
                 }
-            }
+            };
         }
     }
 }
@@ -102,5 +123,37 @@ tools:
         );
         resolve_vars(&mut vars);
         assert_eq!(vars["missing"], "");
+    }
+
+    #[test]
+    fn test_resolve_vars_env_default() {
+        let mut vars = std::collections::HashMap::new();
+        vars.insert(
+            "unset".to_string(),
+            "${env:MCPIFY_NOPE_XYZ:-fallback}".to_string(),
+        );
+        // SAFETY: test runs single-threaded; no concurrent env access
+        unsafe { std::env::set_var("MCPIFY_SET_VAR", "real") };
+        vars.insert(
+            "set".to_string(),
+            "${env:MCPIFY_SET_VAR:-fallback}".to_string(),
+        );
+        resolve_vars(&mut vars);
+        assert_eq!(vars["unset"], "fallback");
+        assert_eq!(vars["set"], "real");
+        unsafe { std::env::remove_var("MCPIFY_SET_VAR") };
+    }
+
+    #[test]
+    fn test_resolve_vars_file() {
+        let mut f = NamedTempFile::new().unwrap();
+        writeln!(f, "token-from-file").unwrap();
+        let mut vars = std::collections::HashMap::new();
+        vars.insert(
+            "tok".to_string(),
+            format!("${{file:{}}}", f.path().display()),
+        );
+        resolve_vars(&mut vars);
+        assert_eq!(vars["tok"], "token-from-file"); // trailing newline trimmed
     }
 }
