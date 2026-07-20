@@ -1,5 +1,5 @@
 use crate::adapters::ToolResult;
-use crate::config::model::{HttpMethod, ToolConfig};
+use crate::config::model::{AuthConfig, HttpMethod, ToolConfig};
 use crate::template::render::{merge_vars, render_template};
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -19,8 +19,10 @@ pub async fn execute(
     let url = render_template(url_template, &vars)?;
     let timeout = Duration::from_millis(tool.timeout_ms);
 
-    // Pre-render headers and body (they don't change between retries)
+    // Pre-render headers, query, auth and body (they don't change between retries)
     let rendered_headers = render_headers(&tool.headers, &vars)?;
+    let rendered_query = render_query(&tool.query_params, &vars)?;
+    let rendered_auth = render_auth(tool.auth.as_ref(), &vars)?;
     let rendered_body = match &tool.body {
         Some(tpl) => Some(render_template(tpl, &vars)?),
         None => None,
@@ -52,6 +54,19 @@ pub async fn execute(
         for (k, v) in &rendered_headers {
             request = request.header(k, v);
         }
+
+        if !rendered_query.is_empty() {
+            request = request.query(&rendered_query);
+        }
+
+        request = match &rendered_auth {
+            Some(AppliedAuth::Bearer(token)) => request.bearer_auth(token),
+            Some(AppliedAuth::Basic { username, password }) => {
+                request.basic_auth(username, Some(password))
+            }
+            Some(AppliedAuth::ApiKey { header, value }) => request.header(header, value),
+            None => request,
+        };
 
         if let Some(body) = &rendered_body {
             request = request
@@ -137,4 +152,110 @@ fn render_headers(
         result.push((k.clone(), render_template(v, vars)?));
     }
     Ok(result)
+}
+
+fn render_query(
+    query: &HashMap<String, String>,
+    vars: &HashMap<String, Value>,
+) -> Result<Vec<(String, String)>> {
+    let mut result = Vec::with_capacity(query.len());
+    for (k, v) in query {
+        result.push((k.clone(), render_template(v, vars)?));
+    }
+    Ok(result)
+}
+
+/// Auth with its `{{var}}` fields resolved, ready to apply to the request.
+enum AppliedAuth {
+    Bearer(String),
+    Basic { username: String, password: String },
+    ApiKey { header: String, value: String },
+}
+
+fn render_auth(
+    auth: Option<&AuthConfig>,
+    vars: &HashMap<String, Value>,
+) -> Result<Option<AppliedAuth>> {
+    let applied = match auth {
+        None => None,
+        Some(AuthConfig::Bearer { token }) => {
+            Some(AppliedAuth::Bearer(render_template(token, vars)?))
+        }
+        Some(AuthConfig::Basic { username, password }) => Some(AppliedAuth::Basic {
+            username: render_template(username, vars)?,
+            password: render_template(password, vars)?,
+        }),
+        Some(AuthConfig::ApiKey { header, value }) => Some(AppliedAuth::ApiKey {
+            header: render_template(header, vars)?,
+            value: render_template(value, vars)?,
+        }),
+    };
+    Ok(applied)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn vars(pairs: &[(&str, &str)]) -> HashMap<String, Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), json!(v)))
+            .collect()
+    }
+
+    #[test]
+    fn test_render_query_substitutes() {
+        let mut q = HashMap::new();
+        q.insert("page".to_string(), "{{page}}".to_string());
+        q.insert("limit".to_string(), "10".to_string());
+        let mut out = render_query(&q, &vars(&[("page", "3")])).unwrap();
+        out.sort();
+        assert_eq!(
+            out,
+            vec![
+                ("limit".to_string(), "10".to_string()),
+                ("page".to_string(), "3".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn test_render_auth_bearer() {
+        let auth = AuthConfig::Bearer {
+            token: "{{tok}}".to_string(),
+        };
+        match render_auth(Some(&auth), &vars(&[("tok", "abc123")])).unwrap() {
+            Some(AppliedAuth::Bearer(t)) => assert_eq!(t, "abc123"),
+            _ => panic!("expected bearer"),
+        }
+    }
+
+    #[test]
+    fn test_render_auth_basic_and_apikey() {
+        let basic = AuthConfig::Basic {
+            username: "u".to_string(),
+            password: "{{pw}}".to_string(),
+        };
+        match render_auth(Some(&basic), &vars(&[("pw", "s3cret")])).unwrap() {
+            Some(AppliedAuth::Basic { username, password }) => {
+                assert_eq!(username, "u");
+                assert_eq!(password, "s3cret");
+            }
+            _ => panic!("expected basic"),
+        }
+
+        let apikey = AuthConfig::ApiKey {
+            header: "X-API-Key".to_string(),
+            value: "{{k}}".to_string(),
+        };
+        match render_auth(Some(&apikey), &vars(&[("k", "keyval")])).unwrap() {
+            Some(AppliedAuth::ApiKey { header, value }) => {
+                assert_eq!(header, "X-API-Key");
+                assert_eq!(value, "keyval");
+            }
+            _ => panic!("expected api-key"),
+        }
+    }
 }

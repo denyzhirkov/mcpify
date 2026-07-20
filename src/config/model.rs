@@ -191,6 +191,12 @@ pub struct ToolConfig {
     pub headers: HashMap<String, String>,
 
     #[serde(default)]
+    pub query_params: HashMap<String, String>,
+
+    #[serde(default)]
+    pub auth: Option<AuthConfig>,
+
+    #[serde(default)]
     pub body: Option<String>,
 
     // sql fields
@@ -324,6 +330,15 @@ pub struct ResourceConfig {
 pub enum ResourceType {
     File,
     Exec,
+}
+
+/// Auth applied to an http tool's request. `{{var}}` templated at call time.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum AuthConfig {
+    Bearer { token: String },
+    Basic { username: String, password: String },
+    ApiKey { header: String, value: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

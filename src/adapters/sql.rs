@@ -378,6 +378,8 @@ mod tests {
             method: None,
             url: None,
             headers: HashMap::new(),
+            query_params: HashMap::new(),
+            auth: None,
             body: None,
             driver: Some(driver),
             dsn: Some(dsn.to_string()),

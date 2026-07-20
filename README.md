@@ -176,6 +176,29 @@ tools:
       required: ["owner", "repo", "title"]
 ```
 
+**With query params and auth helpers:**
+```yaml
+tools:
+  - name: search_issues
+    type: http
+    method: GET
+    url: https://api.github.com/repos/{{owner}}/{{repo}}/issues
+    query_params:
+      state: "{{state}}"
+      per_page: "20"
+    auth:
+      type: bearer            # bearer | basic | api-key
+      token: "{{gh_token}}"
+```
+
+`query_params` are URL-encoded and appended to the URL. `auth` builds the right header for you:
+
+- `bearer` → `Authorization: Bearer <token>`
+- `basic` → `{ type: basic, username: "{{u}}", password: "{{p}}" }`
+- `api-key` → `{ type: api-key, header: "X-API-Key", value: "{{key}}" }`
+
+(You can still set `headers:` manually if you prefer.)
+
 **With retry on server errors (5xx):**
 ```yaml
 tools:
@@ -556,7 +579,12 @@ tools:
     method: GET                # GET | POST | PUT | PATCH | DELETE
     url: http://host/path/{{var}}
     headers:
-      Authorization: "Bearer {{token}}"
+      X-Custom: "{{value}}"
+    query_params:              # URL-encoded, appended to the URL
+      page: "{{page}}"
+    auth:                      # bearer | basic | api-key
+      type: bearer
+      token: "{{token}}"
     body: '{"key": "{{value}}"}'
 
     # sql fields
