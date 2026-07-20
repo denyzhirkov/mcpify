@@ -64,6 +64,24 @@ pub fn validate(config: &McpifyConfig) -> Result<Vec<ValidationWarning>> {
                     errors.push(format!("sql tool '{}': missing 'query'", tool.name));
                 }
             }
+            ToolType::Pipeline => {
+                if tool.steps.is_empty() {
+                    errors.push(format!("pipeline tool '{}': no steps", tool.name));
+                }
+                for step in &tool.steps {
+                    match config.tools.iter().find(|t| t.name == step.tool) {
+                        None => errors.push(format!(
+                            "pipeline tool '{}': step references unknown tool '{}'",
+                            tool.name, step.tool
+                        )),
+                        Some(t) if t.tool_type == ToolType::Pipeline => errors.push(format!(
+                            "pipeline tool '{}': step '{}' references another pipeline (not supported)",
+                            tool.name, step.tool
+                        )),
+                        Some(_) => {}
+                    }
+                }
+            }
         }
 
         // Check depends_on references existing services
@@ -285,6 +303,51 @@ tools:
         );
         let err = validate(&config).unwrap_err();
         assert!(err.to_string().contains("missing 'dsn'"));
+    }
+
+    #[test]
+    fn test_pipeline_no_steps() {
+        let config = parse(
+            r#"
+tools:
+  - name: p
+    type: pipeline
+"#,
+        );
+        let err = validate(&config).unwrap_err();
+        assert!(err.to_string().contains("no steps"));
+    }
+
+    #[test]
+    fn test_pipeline_unknown_step_tool() {
+        let config = parse(
+            r#"
+tools:
+  - name: p
+    type: pipeline
+    steps:
+      - tool: does_not_exist
+"#,
+        );
+        let err = validate(&config).unwrap_err();
+        assert!(err.to_string().contains("unknown tool"));
+    }
+
+    #[test]
+    fn test_pipeline_valid() {
+        let config = parse(
+            r#"
+tools:
+  - name: a
+    type: exec
+    command: echo
+  - name: p
+    type: pipeline
+    steps:
+      - tool: a
+"#,
+        );
+        assert!(validate(&config).is_ok());
     }
 
     #[test]

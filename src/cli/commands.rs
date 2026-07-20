@@ -68,6 +68,7 @@ pub async fn cmd_list(config_path: Option<&Path>) -> Result<()> {
             ToolType::Exec => "exec",
             ToolType::Http => "http",
             ToolType::Sql => "sql",
+            ToolType::Pipeline => "pipe",
         };
         println!(
             "{:<20} {:<6} {:<40} {}ms",
@@ -98,6 +99,9 @@ pub async fn cmd_run(config_path: Option<&Path>, tool_name: &str, input_json: &s
             crate::adapters::http::execute(&entry.config, input, &client, &config.vars).await?
         }
         ToolType::Sql => crate::adapters::sql::execute(&entry.config, input, &config.vars).await?,
+        ToolType::Pipeline => anyhow::bail!(
+            "pipeline tools run only under `mcpify serve` (they orchestrate other tools); `mcpify run` executes a single leaf tool"
+        ),
     };
 
     if !result.stdout.is_empty() {
@@ -217,6 +221,7 @@ pub async fn cmd_status(config_path: Option<&Path>) -> Result<()> {
             ToolType::Exec => "exec",
             ToolType::Http => "http",
             ToolType::Sql => "sql",
+            ToolType::Pipeline => "pipe",
         };
         let deps = if t.depends_on.is_empty() {
             "-".to_string()

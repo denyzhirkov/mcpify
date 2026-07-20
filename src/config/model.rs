@@ -224,6 +224,27 @@ pub struct ToolConfig {
 
     #[serde(default)]
     pub output: Option<OutputSchema>,
+
+    // pipeline fields
+    #[serde(default)]
+    pub steps: Vec<PipelineStep>,
+}
+
+/// One step of a `pipeline` tool: run the named tool, mapping its input from
+/// the pipeline input and earlier steps' outputs via `{{steps.<id>.<field>}}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipelineStep {
+    pub tool: String,
+
+    /// Identifier for referencing this step's output (`{{steps.<id>...}}`).
+    /// Defaults to the tool name when omitted.
+    #[serde(default)]
+    pub id: Option<String>,
+
+    /// Input mapping for the referenced tool. Empty → the pipeline input is
+    /// passed through unchanged.
+    #[serde(default)]
+    pub input: HashMap<String, String>,
 }
 
 fn default_tool_timeout() -> u64 {
@@ -253,6 +274,7 @@ pub enum ToolType {
     Exec,
     Http,
     Sql,
+    Pipeline,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -93,6 +93,7 @@ mod tests {
             retry: None,
             annotations: None,
             output: None,
+            steps: vec![],
         }
     }
 

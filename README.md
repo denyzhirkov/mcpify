@@ -1,6 +1,6 @@
 # mcpify
 
-Config-driven CLI that turns `exec` commands, `http` endpoints, and `sql` queries into [MCP](https://modelcontextprotocol.io/) tools.
+Config-driven CLI that turns `exec` commands, `http` endpoints, `sql` queries, and `pipeline` chains into [MCP](https://modelcontextprotocol.io/) tools.
 
 Define tools in a YAML file, run `mcpify serve`, and any MCP client (Claude Code, etc.) can use them.
 
@@ -244,6 +244,46 @@ SELECT queries return a JSON array of rows. INSERT/UPDATE/DELETE return the numb
 ```yaml
 query: "SELECT * FROM {{raw:table}} WHERE name = {{name}} ORDER BY {{raw:sort}}"
 ```
+
+## Pipeline tools
+
+Chain existing tools into one. Each step references a tool by name; later steps read earlier outputs via `{{steps.<id>.<field>}}`. Runs in order, **fail-fast**, and returns the last step's output.
+
+```yaml
+tools:
+  - name: fetch_user
+    type: http
+    method: GET
+    url: "https://api.example.com/users/{{id}}"
+
+  - name: notify
+    type: exec
+    command: ./notify.sh
+    args: ["{{email}}"]
+
+  - name: onboard_user
+    type: pipeline
+    description: Fetch a user, then notify them
+    steps:
+      - id: user
+        tool: fetch_user
+        input:
+          id: "{{id}}"
+      - tool: notify
+        input:
+          email: "{{steps.user.email}}"
+    input:
+      type: object
+      properties:
+        id: { type: string }
+      required: ["id"]
+```
+
+- A step's output is its `structuredContent` (e.g. sql rows, or JSON stdout), so `{{steps.user.email}}` indexes into it.
+- `id` names the step for `{{steps.<id>...}}` (defaults to the tool name).
+- A step with no `input:` receives the pipeline's own input unchanged.
+- Steps reference `exec`/`http`/`sql` tools (no nested pipelines). A step error stops the pipeline.
+- Pipelines run under `mcpify serve`; `mcpify run` executes single leaf tools only.
 
 ## Structured output
 
@@ -494,7 +534,7 @@ resources:
 
 tools:
   - name: tool_name
-    type: exec                 # exec | http | sql
+    type: exec                 # exec | http | sql | pipeline
     description: What it does
     enabled: true
 
@@ -516,6 +556,13 @@ tools:
     driver: postgres           # postgres | sqlite
     dsn: "{{db_url}}"
     query: "SELECT * FROM {{raw:table}} WHERE id = {{id}}"  # {{id}} bound; {{raw:}} = identifier
+
+    # pipeline fields
+    steps:
+      - id: step1              # optional; defaults to tool name
+        tool: other_tool       # references an exec/http/sql tool
+        input:
+          param: "{{steps.previous.field}}"
 
     # common
     timeout_ms: 5000

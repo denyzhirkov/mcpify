@@ -28,7 +28,7 @@ pub fn render_template(template: &str, vars: &HashMap<String, Value>) -> Result<
             if key.is_empty() {
                 bail!("empty template placeholder");
             }
-            match vars.get(key) {
+            match resolve_path(vars, key) {
                 Some(Value::String(s)) => result.push_str(s),
                 Some(Value::Number(n)) => result.push_str(&n.to_string()),
                 Some(Value::Bool(b)) => result.push_str(&b.to_string()),
@@ -42,6 +42,21 @@ pub fn render_template(template: &str, vars: &HashMap<String, Value>) -> Result<
     }
 
     Ok(result)
+}
+
+/// Resolve a template key, supporting dotted paths into nested objects
+/// (`steps.user.name`). An exact key match wins first, so flat keys that happen
+/// to contain dots still work.
+fn resolve_path<'a>(vars: &'a HashMap<String, Value>, key: &str) -> Option<&'a Value> {
+    if let Some(v) = vars.get(key) {
+        return Some(v);
+    }
+    let mut parts = key.split('.');
+    let mut cur = vars.get(parts.next()?)?;
+    for p in parts {
+        cur = cur.get(p)?;
+    }
+    Some(cur)
 }
 
 /// Convert a flat JSON object to a HashMap<String, Value> for template rendering.
@@ -106,6 +121,23 @@ mod tests {
         let result = render_template("{{missing}}", &HashMap::new());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("missing"));
+    }
+
+    #[test]
+    fn test_dotted_path() {
+        let mut v = HashMap::new();
+        v.insert("steps".to_string(), json!({ "user": { "name": "bob" } }));
+        assert_eq!(
+            render_template("hi {{steps.user.name}}", &v).unwrap(),
+            "hi bob"
+        );
+    }
+
+    #[test]
+    fn test_dotted_path_missing_leaf() {
+        let mut v = HashMap::new();
+        v.insert("steps".to_string(), json!({ "user": {} }));
+        assert!(render_template("{{steps.user.name}}", &v).is_err());
     }
 
     #[test]

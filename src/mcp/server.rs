@@ -169,6 +169,10 @@ impl ServerHandler for McpifyServer {
                 adapters::http::execute(&config, input, &self.state.http_client, &vars).await
             }
             ToolType::Sql => adapters::sql::execute(&config, input, &vars).await,
+            ToolType::Pipeline => {
+                drop(vars);
+                crate::runtime::pipeline::execute(&self.state, &config, input).await
+            }
         };
 
         match result {
