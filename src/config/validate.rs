@@ -1,6 +1,54 @@
-use crate::config::model::{McpifyConfig, ResourceType, ToolType};
+use crate::config::model::{McpifyConfig, PropertyDef, ResourceType, ToolType};
 use anyhow::Result;
 use std::collections::HashSet;
+
+/// JSON Schema keywords accepted in an input property's pass-through `extra`
+/// (the first-class fields — type/enum/default/items/properties/required/
+/// description — never land here). Anything else is flagged as a likely typo.
+const KNOWN_SCHEMA_KEYWORDS: &[&str] = &[
+    // annotations / generic
+    "title",
+    "examples",
+    "deprecated",
+    "readOnly",
+    "writeOnly",
+    "const",
+    "$ref",
+    "$comment",
+    "allOf",
+    "anyOf",
+    "oneOf",
+    "not",
+    // numeric
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "multipleOf",
+    // string
+    "minLength",
+    "maxLength",
+    "pattern",
+    "format",
+    "contentEncoding",
+    "contentMediaType",
+    // array
+    "minItems",
+    "maxItems",
+    "uniqueItems",
+    "contains",
+    "minContains",
+    "maxContains",
+    "prefixItems",
+    // object
+    "additionalProperties",
+    "patternProperties",
+    "minProperties",
+    "maxProperties",
+    "propertyNames",
+    "dependentRequired",
+    "dependentSchemas",
+];
 
 #[derive(Debug)]
 pub struct ValidationWarning {
@@ -158,10 +206,40 @@ pub fn validate(config: &McpifyConfig) -> Result<Vec<ValidationWarning>> {
         }
     }
 
+    // Lint input schemas for unknown (likely mistyped) JSON Schema keywords.
+    for tool in &config.tools {
+        if let Some(schema) = &tool.input {
+            for (name, def) in &schema.properties {
+                lint_property(&tool.name, name, def, &mut warnings);
+            }
+        }
+    }
+
     if errors.is_empty() {
         Ok(warnings)
     } else {
         anyhow::bail!("config validation failed:\n  - {}", errors.join("\n  - "))
+    }
+}
+
+/// Recursively flag `extra` keys that aren't recognized JSON Schema keywords —
+/// the pass-through `#[serde(flatten)]` accepts anything, so a typo like
+/// `mimimum` would otherwise reach the client as a silent no-op.
+fn lint_property(tool: &str, path: &str, def: &PropertyDef, warnings: &mut Vec<ValidationWarning>) {
+    for key in def.extra.keys() {
+        if !KNOWN_SCHEMA_KEYWORDS.contains(&key.as_str()) {
+            warnings.push(ValidationWarning {
+                message: format!(
+                    "tool '{tool}': input property '{path}': unknown JSON Schema keyword '{key}'"
+                ),
+            });
+        }
+    }
+    if let Some(items) = &def.items {
+        lint_property(tool, &format!("{path}[]"), items, warnings);
+    }
+    for (name, nested) in &def.properties {
+        lint_property(tool, &format!("{path}.{name}"), nested, warnings);
     }
 }
 
@@ -303,6 +381,86 @@ tools:
         );
         let err = validate(&config).unwrap_err();
         assert!(err.to_string().contains("missing 'dsn'"));
+    }
+
+    #[test]
+    fn test_lint_unknown_schema_keyword() {
+        let config = parse(
+            r#"
+tools:
+  - name: t
+    type: exec
+    command: echo
+    input:
+      type: object
+      properties:
+        age:
+          type: integer
+          mimimum: 0
+"#,
+        );
+        let warnings = validate(&config).unwrap(); // typo is a warning, not an error
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.message.contains("mimimum") && w.message.contains("age"))
+        );
+    }
+
+    #[test]
+    fn test_lint_known_keyword_and_nested_ok() {
+        let config = parse(
+            r#"
+tools:
+  - name: t
+    type: exec
+    command: echo
+    input:
+      type: object
+      properties:
+        age:
+          type: integer
+          minimum: 0
+          maximum: 120
+        tags:
+          type: array
+          items:
+            type: string
+            minLength: 1
+"#,
+        );
+        let warnings = validate(&config).unwrap();
+        assert!(
+            !warnings
+                .iter()
+                .any(|w| w.message.contains("unknown JSON Schema keyword"))
+        );
+    }
+
+    #[test]
+    fn test_lint_nested_typo_caught() {
+        let config = parse(
+            r#"
+tools:
+  - name: t
+    type: exec
+    command: echo
+    input:
+      type: object
+      properties:
+        tags:
+          type: array
+          items:
+            type: string
+            minLenght: 1
+"#,
+        );
+        let warnings = validate(&config).unwrap();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.message.contains("minLenght") && w.message.contains("tags[]"))
+        );
     }
 
     #[test]

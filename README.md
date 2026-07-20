@@ -311,7 +311,7 @@ tools:
 
 ## Rich input schemas
 
-`input.properties` accepts standard JSON Schema keywords beyond `type`/`description` — `enum`, `default`, `items` (arrays), nested `properties`, plus constraints like `minimum`/`maximum`/`pattern`. They pass through to the client verbatim, giving the agent a precise contract.
+`input.properties` accepts standard JSON Schema keywords beyond `type`/`description` — `enum`, `default`, `items` (arrays), nested `properties`, plus constraints like `minimum`/`maximum`/`pattern`. They pass through to the client verbatim, giving the agent a precise contract. `mcpify validate` warns on unrecognized keywords (e.g. a mistyped `mimimum`), so typos don't silently no-op.
 
 ```yaml
 input:
