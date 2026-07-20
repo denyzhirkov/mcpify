@@ -34,10 +34,14 @@ impl ServerHandler for McpifyServer {
         let capabilities = if has_resources {
             ServerCapabilities::builder()
                 .enable_tools()
+                .enable_tool_list_changed()
                 .enable_resources()
                 .build()
         } else {
-            ServerCapabilities::builder().enable_tools().build()
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_tool_list_changed()
+                .build()
         };
         ServerInfo::new(capabilities).with_instructions("mcpify — config-driven MCP tool runtime")
     }
@@ -331,11 +335,13 @@ fn resolve_structured_content(config: &ToolConfig, result: &ToolResult) -> Optio
 }
 
 pub async fn run_stdio_server(state: Arc<AppState>) -> Result<()> {
-    let server = McpifyServer::new(state);
+    let server = McpifyServer::new(state.clone());
     let transport = rmcp::transport::io::stdio();
 
     tracing::info!("MCP server starting on stdio");
     let handle = server.serve(transport).await?;
+    // Publish the peer so the reload path can push tools/list_changed.
+    *state.peer.write().await = Some(handle.peer().clone());
     handle.waiting().await?;
     tracing::info!("MCP server stopped");
     Ok(())

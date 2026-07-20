@@ -22,6 +22,13 @@ impl ConfigDiff {
             && self.removed_services.is_empty()
             && self.changed_services.is_empty()
     }
+
+    /// True when the tool set changed — the trigger for `tools/list_changed`.
+    pub fn touches_tools(&self) -> bool {
+        !self.added_tools.is_empty()
+            || !self.removed_tools.is_empty()
+            || !self.changed_tools.is_empty()
+    }
 }
 
 impl std::fmt::Display for ConfigDiff {
@@ -105,6 +112,18 @@ mod tests {
 
     fn parse(yaml: &str) -> McpifyConfig {
         serde_yaml::from_str(yaml).unwrap()
+    }
+
+    #[test]
+    fn test_touches_tools() {
+        let mut d = ConfigDiff::default();
+        assert!(!d.touches_tools());
+
+        d.changed_services.push("svc".to_string());
+        assert!(!d.touches_tools()); // service-only change → no tool notification
+
+        d.added_tools.push("t".to_string());
+        assert!(d.touches_tools());
     }
 
     #[test]

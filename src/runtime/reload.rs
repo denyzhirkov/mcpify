@@ -105,6 +105,15 @@ pub async fn apply_reload(state: &Arc<AppState>, config_path: &PathBuf) -> Resul
     let generation = state.generation.fetch_add(1, Ordering::Relaxed) + 1;
     tracing::info!(generation, "reload: complete");
 
+    // Tell the connected client the tool list changed (best-effort — a
+    // disconnected or not-yet-connected peer is not an error).
+    if diff.touches_tools()
+        && let Some(peer) = state.peer.read().await.as_ref()
+        && let Err(e) = peer.notify_tool_list_changed().await
+    {
+        tracing::warn!(error = %e, "reload: failed to send tools/list_changed");
+    }
+
     Ok(())
 }
 
