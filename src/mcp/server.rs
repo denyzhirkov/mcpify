@@ -9,6 +9,7 @@ use rmcp::model::{
     PaginatedRequestParams, RawResource, ReadResourceRequestParams, ReadResourceResult, Resource,
     ResourceContents, ServerCapabilities, ServerInfo, Tool,
 };
+use rmcp::service::{ElicitationError, Peer, RoleServer};
 use rmcp::{ServerHandler, service::ServiceExt};
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
@@ -110,7 +111,7 @@ impl ServerHandler for McpifyServer {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+        context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> std::result::Result<CallToolResult, rmcp::ErrorData> {
         let tool_name: &str = &request.name;
         let input = match request.arguments {
@@ -141,9 +142,9 @@ impl ServerHandler for McpifyServer {
         };
         // registry lock dropped here
 
-        // Destructive gate: require `confirm: true`, then strip it so it never
-        // leaks into the rendered command/query.
-        let input = match check_destructive(&config, input) {
+        // Destructive gate: elicit confirmation (or fall back to confirm:true),
+        // then strip confirm so it never leaks into the rendered command/query.
+        let input = match destructive_gate(&context.peer, &config, input).await {
             Ok(input) => input,
             Err(msg) => return Ok(CallToolResult::error(vec![Content::text(msg)])),
         };
@@ -284,28 +285,71 @@ fn build_input_schema(config: &ToolConfig) -> Value {
     }
 }
 
-/// Enforce the `destructive` annotation: such a tool runs only when the call
-/// carries `confirm: true`, which is then stripped so it never reaches the
-/// command/query renderer. This is a guardrail against accidental calls, not
-/// authorization — real human-in-the-loop would use MCP elicitation.
-fn check_destructive(config: &ToolConfig, mut input: Value) -> std::result::Result<Value, String> {
+/// Elicited confirmation for a destructive tool.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct Confirm {
+    confirm: bool,
+}
+rmcp::elicit_safe!(Confirm);
+
+fn strip_confirm(mut input: Value) -> Value {
+    if let Value::Object(map) = &mut input {
+        map.remove("confirm");
+    }
+    input
+}
+
+/// Fallback gate for clients without elicitation: require an explicit
+/// `confirm: true` argument, then strip it so it never reaches the renderer.
+/// A guardrail, not authorization.
+fn confirm_arg_gate(config: &ToolConfig, input: Value) -> std::result::Result<Value, String> {
+    if input.get("confirm") == Some(&Value::Bool(true)) {
+        Ok(strip_confirm(input))
+    } else {
+        Err(format!(
+            "tool '{}' is destructive; pass \"confirm\": true to proceed",
+            config.name
+        ))
+    }
+}
+
+/// Enforce the `destructive` annotation. Prefer MCP elicitation (real
+/// human-in-the-loop); if the client can't elicit, fall back to the
+/// `confirm: true` argument gate. Fail-closed on decline/cancel/error.
+async fn destructive_gate(
+    peer: &Peer<RoleServer>,
+    config: &ToolConfig,
+    input: Value,
+) -> std::result::Result<Value, String> {
     let destructive = config
         .annotations
         .as_ref()
         .and_then(|a| a.destructive)
         .unwrap_or(false);
-    if destructive {
-        if input.get("confirm") != Some(&Value::Bool(true)) {
-            return Err(format!(
-                "tool '{}' is destructive; pass \"confirm\": true to proceed",
-                config.name
-            ));
-        }
-        if let Value::Object(map) = &mut input {
-            map.remove("confirm");
-        }
+    if !destructive {
+        return Ok(input);
     }
-    Ok(input)
+
+    let prompt = format!(
+        "Run destructive tool '{}'? Confirm to proceed.",
+        config.name
+    );
+    match peer.elicit::<Confirm>(prompt).await {
+        Ok(Some(c)) if c.confirm => Ok(strip_confirm(input)),
+        Ok(_) => Err(format!(
+            "destructive tool '{}' was not confirmed",
+            config.name
+        )),
+        Err(ElicitationError::CapabilityNotSupported) => confirm_arg_gate(config, input),
+        Err(ElicitationError::UserDeclined) | Err(ElicitationError::UserCancelled) => Err(format!(
+            "destructive tool '{}' declined by user",
+            config.name
+        )),
+        Err(e) => Err(format!(
+            "destructive tool '{}': elicitation failed: {e}",
+            config.name
+        )),
+    }
 }
 
 /// Resolve the MCP `structuredContent` for a call: prefer what the adapter
@@ -482,7 +526,8 @@ tools:
     }
 
     #[test]
-    fn test_destructive_requires_confirm() {
+    fn test_confirm_arg_gate() {
+        // Fallback path (client without elicitation): require confirm: true.
         let tool = first_tool(
             r#"
 tools:
@@ -492,26 +537,19 @@ tools:
     annotations: { destructive: true }
 "#,
         );
-        assert!(check_destructive(&tool, json!({})).is_err());
-        assert!(check_destructive(&tool, json!({ "confirm": false })).is_err());
+        assert!(confirm_arg_gate(&tool, json!({})).is_err());
+        assert!(confirm_arg_gate(&tool, json!({ "confirm": false })).is_err());
 
-        let out = check_destructive(&tool, json!({ "confirm": true, "x": 1 })).unwrap();
+        let out = confirm_arg_gate(&tool, json!({ "confirm": true, "x": 1 })).unwrap();
         assert_eq!(out.get("confirm"), None); // stripped
         assert_eq!(out["x"], json!(1));
     }
 
     #[test]
-    fn test_non_destructive_passes_input_through() {
-        let tool = first_tool(
-            r#"
-tools:
-  - name: ls
-    type: exec
-    command: ls
-"#,
-        );
-        let out = check_destructive(&tool, json!({ "confirm": true })).unwrap();
-        assert_eq!(out["confirm"], json!(true)); // not our reserved key here
+    fn test_strip_confirm() {
+        let out = strip_confirm(json!({ "confirm": true, "keep": 1 }));
+        assert_eq!(out.get("confirm"), None);
+        assert_eq!(out["keep"], json!(1));
     }
 
     #[test]

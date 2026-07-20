@@ -196,7 +196,7 @@ tools:
     description: Find user by email
     driver: sqlite
     dsn: "sqlite:./data.db"
-    query: "SELECT * FROM users WHERE email = '{{email}}'"
+    query: "SELECT * FROM users WHERE email = {{email}}"
     timeout_ms: 5000
     annotations:
       read_only: true
@@ -234,9 +234,66 @@ tools:
 
 SELECT queries return a JSON array of rows. INSERT/UPDATE/DELETE return the number of affected rows.
 
+### Parameters vs identifiers
+
+`{{var}}` in a `query` is a **bind parameter** — the value is sent to the database separately, never interpolated into SQL text. This closes SQL injection: a value like `'; DROP TABLE users; --` is stored/compared as data.
+
+- Write bind placeholders **unquoted**: `WHERE email = {{email}}`, not `= '{{email}}'`. A quoted placeholder is a config error (`mcpify validate` rejects it).
+- To substitute a **table or column name** (which SQL can't bind), use `{{raw:name}}`. The value must be a valid identifier (`^[A-Za-z_][A-Za-z0-9_]*$`) or the call is rejected — so it still can't inject.
+
+```yaml
+query: "SELECT * FROM {{raw:table}} WHERE name = {{name}} ORDER BY {{raw:sort}}"
+```
+
+## Structured output
+
+Declare an `output` schema so the MCP client knows the shape of a tool's result and receives it as `structuredContent` (not just text).
+
+```yaml
+tools:
+  - name: recent_orders
+    type: sql
+    driver: postgres
+    dsn: "{{db_url}}"
+    query: "SELECT id, status, total FROM orders LIMIT {{limit}}"
+    annotations:
+      read_only: true
+    output:
+      schema:
+        type: array
+        items:
+          type: object
+```
+
+- **sql** tools emit `structuredContent` natively (rows as JSON) — no config needed.
+- **exec / http** tools set `output.parse: json` to parse stdout / the response body into `structuredContent`. If it isn't valid JSON, the call degrades to text-only (never fails).
+- `output.schema` is advertised to the client as the tool's `outputSchema`.
+
+## Rich input schemas
+
+`input.properties` accepts standard JSON Schema keywords beyond `type`/`description` — `enum`, `default`, `items` (arrays), nested `properties`, plus constraints like `minimum`/`maximum`/`pattern`. They pass through to the client verbatim, giving the agent a precise contract.
+
+```yaml
+input:
+  type: object
+  properties:
+    role:
+      type: string
+      enum: [admin, user]
+      default: user
+    age:
+      type: integer
+      minimum: 0
+      maximum: 120
+    tags:
+      type: array
+      items: { type: string }
+  required: ["role"]
+```
+
 ## Tool annotations
 
-Mark tools with hints for the MCP client. Clients like Claude Code can use these to ask for confirmation before running destructive actions.
+Annotations are **enforced**, not just advertised to the client.
 
 ```yaml
 tools:
@@ -244,7 +301,7 @@ tools:
     type: sql
     driver: postgres
     dsn: "{{db_url}}"
-    query: "DROP TABLE {{table}}"
+    query: "DROP TABLE {{raw:table}}"
     timeout_ms: 10000
     annotations:
       destructive: true
@@ -264,6 +321,10 @@ tools:
     annotations:
       read_only: true
 ```
+
+- **`read_only: true`** (sql) — the connection is opened read-only, so the database itself rejects any write. Robust against tricks a keyword check would miss.
+- **`destructive: true`** (any tool) — mcpify asks the user to confirm via MCP **elicitation** before running. On clients that don't support elicitation, it falls back to requiring `"confirm": true` in the call arguments (the `confirm` key is stripped before the command/query runs). Declined/cancelled → the call is rejected.
+- **`idempotent`, `open_world`** — advisory hints passed to the client.
 
 Available annotations: `destructive`, `read_only`, `idempotent`, `open_world` (all boolean).
 
@@ -359,7 +420,7 @@ mcpify reload              # send SIGHUP to running server
 mcpify serve --watch       # auto-reload on file change
 ```
 
-Reload is diff-based — only changed tools and services are affected. Invalid config is rejected.
+Reload is diff-based — only changed tools and services are affected. Invalid config is rejected. When the tool set changes, connected MCP clients are notified live via `notifications/tools/list_changed` — no reconnect needed.
 
 ## CLI
 
@@ -454,7 +515,7 @@ tools:
     # sql fields
     driver: postgres           # postgres | sqlite
     dsn: "{{db_url}}"
-    query: "SELECT * FROM t WHERE id = '{{id}}'"
+    query: "SELECT * FROM {{raw:table}} WHERE id = {{id}}"  # {{id}} bound; {{raw:}} = identifier
 
     # common
     timeout_ms: 5000
@@ -463,8 +524,8 @@ tools:
       max_retries: 3
       retry_delay_ms: 1000
     annotations:
-      destructive: false
-      read_only: true
+      destructive: false       # enforced: prompts via elicitation / confirm:true
+      read_only: true          # enforced (sql): read-only DB connection
       idempotent: true
       open_world: false
 
@@ -474,7 +535,13 @@ tools:
         var:
           type: string
           description: Description for the AI
+          # + enum / default / items / minimum / maximum / pattern ... (JSON Schema)
       required: ["var"]
+
+    output:                    # optional — declare result shape
+      parse: json              # exec/http: parse stdout into structuredContent (default: text)
+      schema:                  # advertised as the tool's outputSchema
+        type: object
 ```
 
 ## License

@@ -1124,6 +1124,7 @@ dependencies = [
  "notify-debouncer-mini",
  "reqwest",
  "rmcp",
+ "schemars",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1609,6 +1610,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "url",
 ]
 
 [[package]]
