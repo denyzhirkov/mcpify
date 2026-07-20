@@ -7,6 +7,7 @@ use sqlx::Column;
 use sqlx::Row;
 use sqlx::TypeInfo;
 use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 pub async fn execute(
@@ -131,26 +132,65 @@ fn is_valid_identifier(s: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-async fn run_sqlite(
-    dsn: &str,
-    query_template: &str,
-    vars: &HashMap<String, Value>,
-    read_only: bool,
-) -> Result<ToolResult> {
+/// Pools are cached per (read_only, dsn) and reused across calls — a sqlx `Pool`
+/// is an `Arc` designed to be long-lived, so cloning shares connections. Never
+/// closed (process-lifetime); `read_only` is in the key since it opens a
+/// distinct connection mode.
+static SQLITE_POOLS: OnceLock<Mutex<HashMap<String, sqlx::SqlitePool>>> = OnceLock::new();
+static PG_POOLS: OnceLock<Mutex<HashMap<String, sqlx::PgPool>>> = OnceLock::new();
+
+async fn sqlite_pool(dsn: &str, read_only: bool) -> Result<sqlx::SqlitePool> {
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
-    let (sql, values) = build_bound_query(query_template, vars, &SqlDriver::Sqlite)?;
-
+    let key = format!("{read_only}:{dsn}");
+    let cache = SQLITE_POOLS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(pool) = cache.lock().unwrap().get(&key) {
+        return Ok(pool.clone());
+    }
     // read_only annotation → open the DB read-only so writes are rejected by SQLite itself.
     let options = dsn
         .parse::<SqliteConnectOptions>()
         .context("parsing sqlite dsn")?
         .read_only(read_only);
     let pool = SqlitePoolOptions::new()
-        .max_connections(1)
+        .max_connections(5)
         .connect_with(options)
         .await
         .context("connecting to sqlite")?;
+    Ok(cache.lock().unwrap().entry(key).or_insert(pool).clone())
+}
+
+async fn postgres_pool(dsn: &str, read_only: bool) -> Result<sqlx::PgPool> {
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+    let key = format!("{read_only}:{dsn}");
+    let cache = PG_POOLS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(pool) = cache.lock().unwrap().get(&key) {
+        return Ok(pool.clone());
+    }
+    // read_only annotation → force a read-only session so writes are rejected by Postgres.
+    let mut options = dsn
+        .parse::<PgConnectOptions>()
+        .context("parsing postgres dsn")?;
+    if read_only {
+        options = options.options([("default_transaction_read_only", "on")]);
+    }
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect_with(options)
+        .await
+        .context("connecting to postgres")?;
+    Ok(cache.lock().unwrap().entry(key).or_insert(pool).clone())
+}
+
+async fn run_sqlite(
+    dsn: &str,
+    query_template: &str,
+    vars: &HashMap<String, Value>,
+    read_only: bool,
+) -> Result<ToolResult> {
+    let (sql, values) = build_bound_query(query_template, vars, &SqlDriver::Sqlite)?;
+    let pool = sqlite_pool(dsn, read_only).await?;
 
     let is_select = sql.trim_start().to_uppercase().starts_with("SELECT");
 
@@ -178,7 +218,6 @@ async fn run_sqlite(
 
         let json_rows: Vec<Value> = rows.iter().map(sqlite_row_to_json).collect();
         let stdout = serde_json::to_string_pretty(&json_rows)?;
-        pool.close().await;
         Ok(ToolResult {
             stdout,
             stderr: String::new(),
@@ -194,7 +233,6 @@ async fn run_sqlite(
 
         let affected = result.rows_affected();
         let structured = json!({ "rows_affected": affected });
-        pool.close().await;
         Ok(ToolResult {
             stdout: structured.to_string(),
             stderr: String::new(),
@@ -211,22 +249,8 @@ async fn run_postgres(
     vars: &HashMap<String, Value>,
     read_only: bool,
 ) -> Result<ToolResult> {
-    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-
     let (sql, values) = build_bound_query(query_template, vars, &SqlDriver::Postgres)?;
-
-    // read_only annotation → force a read-only session so writes are rejected by Postgres.
-    let mut options = dsn
-        .parse::<PgConnectOptions>()
-        .context("parsing postgres dsn")?;
-    if read_only {
-        options = options.options([("default_transaction_read_only", "on")]);
-    }
-    let pool = PgPoolOptions::new()
-        .max_connections(1)
-        .connect_with(options)
-        .await
-        .context("connecting to postgres")?;
+    let pool = postgres_pool(dsn, read_only).await?;
 
     let is_select = sql.trim_start().to_uppercase().starts_with("SELECT");
 
@@ -257,7 +281,6 @@ async fn run_postgres(
 
         let json_rows: Vec<Value> = rows.iter().map(pg_row_to_json).collect();
         let stdout = serde_json::to_string_pretty(&json_rows)?;
-        pool.close().await;
         Ok(ToolResult {
             stdout,
             stderr: String::new(),
@@ -273,7 +296,6 @@ async fn run_postgres(
 
         let affected = result.rows_affected();
         let structured = json!({ "rows_affected": affected });
-        pool.close().await;
         Ok(ToolResult {
             stdout: structured.to_string(),
             stderr: String::new(),
@@ -528,6 +550,31 @@ mod tests {
         // Without the annotation, writes still work.
         let rw_insert = make_sql_tool(SqlDriver::Sqlite, &dsn, "INSERT INTO t VALUES (2)");
         assert!(execute(&rw_insert, json!({}), &cv).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_pool_reused_across_calls() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let dsn = format!("sqlite:{}", tmp.path().display());
+        let cv = HashMap::new();
+
+        let create = make_sql_tool(SqlDriver::Sqlite, &dsn, "CREATE TABLE t (id INTEGER)");
+        execute(&create, json!({}), &cv).await.unwrap();
+
+        // Separate calls on the same DSN reuse one cached pool; writes persist.
+        for id in [1, 2, 3] {
+            let ins = make_sql_tool(
+                SqlDriver::Sqlite,
+                &dsn,
+                &format!("INSERT INTO t VALUES ({id})"),
+            );
+            execute(&ins, json!({}), &cv).await.unwrap();
+        }
+
+        let sel = make_sql_tool(SqlDriver::Sqlite, &dsn, "SELECT id FROM t");
+        let r = execute(&sel, json!({}), &cv).await.unwrap();
+        let rows: Vec<Value> = serde_json::from_str(&r.stdout).unwrap();
+        assert_eq!(rows.len(), 3);
     }
 
     #[test]
