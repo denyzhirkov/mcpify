@@ -21,11 +21,19 @@ pub async fn execute(
     let vars = merge_vars(&input, config_vars);
     let dsn = render_template(dsn_template, &vars)?;
     let timeout = Duration::from_millis(tool.timeout_ms);
+    let read_only = tool
+        .annotations
+        .as_ref()
+        .and_then(|a| a.read_only)
+        .unwrap_or(false);
 
-    let result = tokio::time::timeout(timeout, run_query(driver, &dsn, query_template, &vars))
-        .await
-        .map_err(|_| crate::errors::McpifyError::Timeout(tool.timeout_ms))?
-        .with_context(|| format!("sql tool '{}': query failed", tool.name))?;
+    let result = tokio::time::timeout(
+        timeout,
+        run_query(driver, &dsn, query_template, &vars, read_only),
+    )
+    .await
+    .map_err(|_| crate::errors::McpifyError::Timeout(tool.timeout_ms))?
+    .with_context(|| format!("sql tool '{}': query failed", tool.name))?;
 
     Ok(result)
 }
@@ -35,10 +43,11 @@ async fn run_query(
     dsn: &str,
     query_template: &str,
     vars: &HashMap<String, Value>,
+    read_only: bool,
 ) -> Result<ToolResult> {
     match driver {
-        SqlDriver::Sqlite => run_sqlite(dsn, query_template, vars).await,
-        SqlDriver::Postgres => run_postgres(dsn, query_template, vars).await,
+        SqlDriver::Sqlite => run_sqlite(dsn, query_template, vars, read_only).await,
+        SqlDriver::Postgres => run_postgres(dsn, query_template, vars, read_only).await,
     }
 }
 
@@ -126,14 +135,20 @@ async fn run_sqlite(
     dsn: &str,
     query_template: &str,
     vars: &HashMap<String, Value>,
+    read_only: bool,
 ) -> Result<ToolResult> {
-    use sqlx::sqlite::SqlitePoolOptions;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
     let (sql, values) = build_bound_query(query_template, vars, &SqlDriver::Sqlite)?;
 
+    // read_only annotation → open the DB read-only so writes are rejected by SQLite itself.
+    let options = dsn
+        .parse::<SqliteConnectOptions>()
+        .context("parsing sqlite dsn")?
+        .read_only(read_only);
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
-        .connect(dsn)
+        .connect_with(options)
         .await
         .context("connecting to sqlite")?;
 
@@ -194,14 +209,22 @@ async fn run_postgres(
     dsn: &str,
     query_template: &str,
     vars: &HashMap<String, Value>,
+    read_only: bool,
 ) -> Result<ToolResult> {
-    use sqlx::postgres::PgPoolOptions;
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
     let (sql, values) = build_bound_query(query_template, vars, &SqlDriver::Postgres)?;
 
+    // read_only annotation → force a read-only session so writes are rejected by Postgres.
+    let mut options = dsn
+        .parse::<PgConnectOptions>()
+        .context("parsing postgres dsn")?;
+    if read_only {
+        options = options.options([("default_transaction_read_only", "on")]);
+    }
     let pool = PgPoolOptions::new()
         .max_connections(1)
-        .connect(dsn)
+        .connect_with(options)
         .await
         .context("connecting to postgres")?;
 
@@ -470,6 +493,40 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.is_error);
+    }
+
+    #[tokio::test]
+    async fn test_sql_read_only_blocks_write() {
+        use crate::config::model::ToolAnnotations;
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let dsn = format!("sqlite:{}", tmp.path().display());
+        let cv = HashMap::new();
+
+        // Set up the table with a normal (read-write) tool.
+        let create = make_sql_tool(SqlDriver::Sqlite, &dsn, "CREATE TABLE t (id INTEGER)");
+        execute(&create, json!({}), &cv).await.unwrap();
+
+        let read_only = || {
+            Some(ToolAnnotations {
+                read_only: Some(true),
+                ..Default::default()
+            })
+        };
+
+        // read_only tool: SELECT works.
+        let mut ro_select = make_sql_tool(SqlDriver::Sqlite, &dsn, "SELECT * FROM t");
+        ro_select.annotations = read_only();
+        assert!(execute(&ro_select, json!({}), &cv).await.is_ok());
+
+        // read_only tool: write rejected by SQLite itself.
+        let mut ro_insert = make_sql_tool(SqlDriver::Sqlite, &dsn, "INSERT INTO t VALUES (1)");
+        ro_insert.annotations = read_only();
+        assert!(execute(&ro_insert, json!({}), &cv).await.is_err());
+
+        // Without the annotation, writes still work.
+        let rw_insert = make_sql_tool(SqlDriver::Sqlite, &dsn, "INSERT INTO t VALUES (2)");
+        assert!(execute(&rw_insert, json!({}), &cv).await.is_ok());
     }
 
     #[test]

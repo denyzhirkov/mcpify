@@ -137,6 +137,13 @@ impl ServerHandler for McpifyServer {
         };
         // registry lock dropped here
 
+        // Destructive gate: require `confirm: true`, then strip it so it never
+        // leaks into the rendered command/query.
+        let input = match check_destructive(&config, input) {
+            Ok(input) => input,
+            Err(msg) => return Ok(CallToolResult::error(vec![Content::text(msg)])),
+        };
+
         // Check depends_on with a single read lock on supervisor
         if !depends_on.is_empty() {
             let supervisor = self.state.supervisor.read().await;
@@ -271,6 +278,30 @@ fn build_input_schema(config: &ToolConfig) -> Value {
         Some(schema) => serde_json::to_value(schema).unwrap_or_else(|_| empty()),
         None => empty(),
     }
+}
+
+/// Enforce the `destructive` annotation: such a tool runs only when the call
+/// carries `confirm: true`, which is then stripped so it never reaches the
+/// command/query renderer. This is a guardrail against accidental calls, not
+/// authorization — real human-in-the-loop would use MCP elicitation.
+fn check_destructive(config: &ToolConfig, mut input: Value) -> std::result::Result<Value, String> {
+    let destructive = config
+        .annotations
+        .as_ref()
+        .and_then(|a| a.destructive)
+        .unwrap_or(false);
+    if destructive {
+        if input.get("confirm") != Some(&Value::Bool(true)) {
+            return Err(format!(
+                "tool '{}' is destructive; pass \"confirm\": true to proceed",
+                config.name
+            ));
+        }
+        if let Value::Object(map) = &mut input {
+            map.remove("confirm");
+        }
+    }
+    Ok(input)
 }
 
 /// Resolve the MCP `structuredContent` for a call: prefer what the adapter
@@ -442,6 +473,39 @@ tools:
         );
         let result = text_result("plain text");
         assert_eq!(resolve_structured_content(&tool, &result), None);
+    }
+
+    #[test]
+    fn test_destructive_requires_confirm() {
+        let tool = first_tool(
+            r#"
+tools:
+  - name: rm
+    type: exec
+    command: rm
+    annotations: { destructive: true }
+"#,
+        );
+        assert!(check_destructive(&tool, json!({})).is_err());
+        assert!(check_destructive(&tool, json!({ "confirm": false })).is_err());
+
+        let out = check_destructive(&tool, json!({ "confirm": true, "x": 1 })).unwrap();
+        assert_eq!(out.get("confirm"), None); // stripped
+        assert_eq!(out["x"], json!(1));
+    }
+
+    #[test]
+    fn test_non_destructive_passes_input_through() {
+        let tool = first_tool(
+            r#"
+tools:
+  - name: ls
+    type: exec
+    command: ls
+"#,
+        );
+        let out = check_destructive(&tool, json!({ "confirm": true })).unwrap();
+        assert_eq!(out["confirm"], json!(true)); // not our reserved key here
     }
 
     #[test]
