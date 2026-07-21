@@ -392,6 +392,7 @@ mod tests {
             annotations: None,
             output: None,
             steps: vec![],
+            cache: None,
         }
     }
 

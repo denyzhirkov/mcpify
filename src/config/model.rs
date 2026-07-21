@@ -234,6 +234,19 @@ pub struct ToolConfig {
     // pipeline fields
     #[serde(default)]
     pub steps: Vec<PipelineStep>,
+
+    // cache / background polling
+    #[serde(default)]
+    pub cache: Option<CacheConfig>,
+}
+
+/// Background refresh for a tool: its action runs on `refresh_interval_ms` and
+/// the last result is served instantly on call. Cached tools are parameterless —
+/// the background fetch uses config vars + empty input; call arguments are
+/// ignored except the `refresh: true` bypass.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheConfig {
+    pub refresh_interval_ms: u64,
 }
 
 /// One step of a `pipeline` tool: run the named tool, mapping its input from

@@ -141,6 +141,53 @@ pub fn validate(config: &McpifyConfig) -> Result<Vec<ValidationWarning>> {
                 ));
             }
         }
+
+        // Validate background cache config.
+        if let Some(cache) = &tool.cache {
+            if cache.refresh_interval_ms == 0 {
+                errors.push(format!(
+                    "cached tool '{}': cache.refresh_interval_ms must be > 0",
+                    tool.name
+                ));
+            }
+            if tool.tool_type == ToolType::Pipeline {
+                errors.push(format!(
+                    "cached tool '{}': caching a pipeline is not supported",
+                    tool.name
+                ));
+            }
+            let destructive = tool
+                .annotations
+                .as_ref()
+                .and_then(|a| a.destructive)
+                .unwrap_or(false);
+            if destructive {
+                errors.push(format!(
+                    "cached tool '{}': a destructive tool cannot be cached (it would run on a timer)",
+                    tool.name
+                ));
+            }
+            if cache.refresh_interval_ms > 0 && cache.refresh_interval_ms < 1000 {
+                warnings.push(ValidationWarning {
+                    message: format!(
+                        "cached tool '{}': refresh_interval_ms={} is very small; the action runs unattended on this interval",
+                        tool.name, cache.refresh_interval_ms
+                    ),
+                });
+            }
+            if tool
+                .input
+                .as_ref()
+                .is_some_and(|s| !s.properties.is_empty())
+            {
+                warnings.push(ValidationWarning {
+                    message: format!(
+                        "cached tool '{}': input properties are ignored — cached tools are parameterless (the background fetch uses config vars + empty input)",
+                        tool.name
+                    ),
+                });
+            }
+        }
     }
 
     // Validate services
@@ -549,6 +596,104 @@ tools:
     driver: sqlite
     dsn: "sqlite::memory:"
     query: "SELECT * FROM {{raw:table}} WHERE name = {{name}}"
+"#,
+        );
+        assert!(validate(&config).is_ok());
+    }
+
+    #[test]
+    fn test_cache_on_destructive_rejected() {
+        let config = parse(
+            r#"
+tools:
+  - name: t
+    type: exec
+    command: echo
+    cache:
+      refresh_interval_ms: 5000
+    annotations:
+      destructive: true
+"#,
+        );
+        let err = validate(&config).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("destructive tool cannot be cached")
+        );
+    }
+
+    #[test]
+    fn test_cache_on_pipeline_rejected() {
+        let config = parse(
+            r#"
+tools:
+  - name: a
+    type: exec
+    command: echo
+  - name: p
+    type: pipeline
+    steps:
+      - tool: a
+    cache:
+      refresh_interval_ms: 5000
+"#,
+        );
+        let err = validate(&config).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("caching a pipeline is not supported")
+        );
+    }
+
+    #[test]
+    fn test_cache_zero_interval_rejected() {
+        let config = parse(
+            r#"
+tools:
+  - name: t
+    type: exec
+    command: echo
+    cache:
+      refresh_interval_ms: 0
+"#,
+        );
+        let err = validate(&config).unwrap_err();
+        assert!(err.to_string().contains("refresh_interval_ms must be > 0"));
+    }
+
+    #[test]
+    fn test_cache_small_interval_and_input_props_warn() {
+        let config = parse(
+            r#"
+tools:
+  - name: t
+    type: exec
+    command: echo
+    cache:
+      refresh_interval_ms: 100
+    input:
+      type: object
+      properties:
+        q:
+          type: string
+"#,
+        );
+        let warnings = validate(&config).unwrap();
+        assert!(warnings.iter().any(|w| w.message.contains("very small")));
+        assert!(warnings.iter().any(|w| w.message.contains("parameterless")));
+    }
+
+    #[test]
+    fn test_cache_valid() {
+        let config = parse(
+            r#"
+tools:
+  - name: t
+    type: http
+    method: GET
+    url: "http://localhost/x"
+    cache:
+      refresh_interval_ms: 30000
 "#,
         );
         assert!(validate(&config).is_ok());

@@ -1,6 +1,5 @@
-use crate::adapters;
 use crate::adapters::ToolResult;
-use crate::config::model::{OutputParse, ResourceType, ToolConfig, ToolType};
+use crate::config::model::{OutputParse, ResourceType, ToolConfig};
 use crate::runtime::app_state::AppState;
 use crate::runtime::registry::ToolAvailability;
 use anyhow::Result;
@@ -142,6 +141,27 @@ impl ServerHandler for McpifyServer {
         };
         // registry lock dropped here
 
+        // Cached tools serve the last stored result instantly; `refresh: true`
+        // bypasses the cache and fetches fresh. Cached tools are parameterless
+        // and (per validate) never destructive, so the gate/depends_on below are
+        // skipped for them.
+        if config.cache.is_some() {
+            let force = input.get("refresh") == Some(&Value::Bool(true));
+            if !force && let Some(entry) = self.state.cache.read().await.get(tool_name).cloned() {
+                let meta = entry.freshness_meta();
+                return Ok(build_call_result(&config, entry.result, Some(meta)));
+            }
+            return Ok(
+                match crate::runtime::cache::fill(&self.state, tool_name, &config).await {
+                    Ok(entry) => {
+                        let meta = entry.freshness_meta();
+                        build_call_result(&config, entry.result, Some(meta))
+                    }
+                    Err(e) => CallToolResult::error(vec![Content::text(format!("error: {e}"))]),
+                },
+            );
+        }
+
         // Destructive gate: elicit confirmation (or fall back to confirm:true),
         // then strip confirm so it never leaks into the rendered command/query.
         let input = match destructive_gate(&context.peer, &config, input).await {
@@ -161,37 +181,8 @@ impl ServerHandler for McpifyServer {
             }
         }
 
-        let vars = self.state.vars.read().await;
-
-        let result = match config.tool_type {
-            ToolType::Exec => adapters::exec::execute(&config, input, &vars).await,
-            ToolType::Http => {
-                adapters::http::execute(&config, input, &self.state.http_client, &vars).await
-            }
-            ToolType::Sql => adapters::sql::execute(&config, input, &vars).await,
-            ToolType::Pipeline => {
-                drop(vars);
-                crate::runtime::pipeline::execute(&self.state, &config, input).await
-            }
-        };
-
-        match result {
-            Ok(tool_result) => {
-                let structured = resolve_structured_content(&config, &tool_result);
-
-                let mut content = vec![Content::text(tool_result.stdout)];
-                if !tool_result.stderr.is_empty() {
-                    content.push(Content::text(format!("[stderr] {}", tool_result.stderr)));
-                }
-
-                let mut call_result = if tool_result.is_error {
-                    CallToolResult::error(content)
-                } else {
-                    CallToolResult::success(content)
-                };
-                call_result.structured_content = structured;
-                Ok(call_result)
-            }
+        match crate::runtime::cache::execute_tool_action(&self.state, &config, input).await {
+            Ok(tool_result) => Ok(build_call_result(&config, tool_result, None)),
             Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
                 "error: {e}"
             ))])),
@@ -380,6 +371,32 @@ fn resolve_structured_content(config: &ToolConfig, result: &ToolResult) -> Optio
         }
         _ => None,
     }
+}
+
+/// Build the MCP `CallToolResult` from a `ToolResult`: text content (+ stderr),
+/// resolved `structuredContent`, and — for cached tools — freshness `_meta`.
+fn build_call_result(
+    config: &ToolConfig,
+    tool_result: ToolResult,
+    freshness: Option<Map<String, Value>>,
+) -> CallToolResult {
+    let structured = resolve_structured_content(config, &tool_result);
+
+    let mut content = vec![Content::text(tool_result.stdout)];
+    if !tool_result.stderr.is_empty() {
+        content.push(Content::text(format!("[stderr] {}", tool_result.stderr)));
+    }
+
+    let mut call_result = if tool_result.is_error {
+        CallToolResult::error(content)
+    } else {
+        CallToolResult::success(content)
+    };
+    call_result.structured_content = structured;
+    if let Some(meta) = freshness {
+        call_result.meta = Some(rmcp::model::Meta(meta));
+    }
+    call_result
 }
 
 pub async fn run_stdio_server(state: Arc<AppState>) -> Result<()> {

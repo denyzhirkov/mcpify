@@ -158,6 +158,12 @@ pub async fn cmd_serve(config_path: Option<&Path>, watch: bool) -> Result<()> {
         }
     });
 
+    // Spawn background cache pollers for tools with a `cache` block.
+    {
+        let cfg = state.current_config.read().await;
+        state.cache_pollers.lock().await.reconcile(&state, &cfg);
+    }
+
     // Spawn SIGHUP reload handler
     #[cfg(unix)]
     crate::runtime::reload::spawn_signal_handler(Arc::clone(&state), config_path_buf.clone());
@@ -172,6 +178,7 @@ pub async fn cmd_serve(config_path: Option<&Path>, watch: bool) -> Result<()> {
 
     // Cleanup
     tracing::info!("shutting down services");
+    state.cache_pollers.lock().await.stop_all();
     let mut sup = state.supervisor.write().await;
     sup.stop_all().await?;
     remove_pid_file();

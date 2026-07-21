@@ -105,6 +105,12 @@ pub async fn apply_reload(state: &Arc<AppState>, config_path: &PathBuf) -> Resul
     let generation = state.generation.fetch_add(1, Ordering::Relaxed) + 1;
     tracing::info!(generation, "reload: complete");
 
+    // Reconcile background cache pollers against the new tool set.
+    {
+        let cfg = state.current_config.read().await;
+        state.cache_pollers.lock().await.reconcile(state, &cfg);
+    }
+
     // Tell the connected client the tool list changed (best-effort — a
     // disconnected or not-yet-connected peer is not an error).
     if diff.touches_tools()

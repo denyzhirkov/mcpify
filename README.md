@@ -313,6 +313,30 @@ tools:
 - Steps reference `exec`/`http`/`sql` tools (no nested pipelines). A step error stops the pipeline.
 - Pipelines run under `mcpify serve`; `mcpify run` executes single leaf tools only.
 
+## Cached tools
+
+Add a `cache` block to an `exec`/`http`/`sql` tool and it runs in the **background** on an interval, storing the last result. A call then returns the stored value **instantly** — no waiting on the action.
+
+```yaml
+tools:
+  - name: exchange_rates
+    type: http
+    method: GET
+    url: "https://api.example.com/rates"
+    output:
+      parse: json
+    cache:
+      refresh_interval_ms: 60000   # refresh every 60s in the background
+```
+
+- **Warm start.** The action runs once on startup (and on reload) so the cache is populated before the first call; a first call to a still-cold cache fills it synchronously.
+- **Freshness metadata.** Every cached result carries `_meta` so the agent can judge staleness: `cached`, `fetched_at_unix_ms` (UTC), `age_ms`, `stale`, `last_error`.
+- **Serve last-good.** If a background refresh fails, the last successful result keeps being served, marked `stale: true` with `last_error` — the call does not fail while there is anything to serve.
+- **Force refresh.** Call with `{"refresh": true}` to bypass the cache and fetch fresh (the argument is not passed to the action).
+- **Parameterless.** The background fetch uses config vars + empty input; call arguments are ignored (except `refresh`). `validate` warns if a cached tool declares `input` properties.
+- **Reload-aware.** Pollers are reconciled on reload — added, removed, or restarted when the interval changes.
+- **Guardrails.** `validate` rejects `cache` on a `destructive` tool (it would run side effects on a timer) and on a `pipeline`, requires `refresh_interval_ms > 0`, and warns when the interval is under 1s. Cached actions run unattended — intend them for read-only/idempotent work.
+
 ## Structured output
 
 Declare an `output` schema so the MCP client knows the shape of a tool's result and receives it as `structuredContent` (not just text).
@@ -488,7 +512,7 @@ mcpify reload              # send SIGHUP to running server
 mcpify serve --watch       # auto-reload on file change
 ```
 
-Reload is diff-based — only changed tools and services are affected. Invalid config is rejected. When the tool set changes, connected MCP clients are notified live via `notifications/tools/list_changed` — no reconnect needed.
+Reload is diff-based — only changed tools and services are affected. Invalid config is rejected. When the tool set changes, connected MCP clients are notified live via `notifications/tools/list_changed` — no reconnect needed. Background cache pollers are reconciled too: added, removed, or restarted when a tool's `refresh_interval_ms` changes.
 
 ## CLI
 
@@ -624,6 +648,9 @@ tools:
       parse: json              # exec/http: parse stdout into structuredContent (default: text)
       schema:                  # advertised as the tool's outputSchema
         type: object
+
+    cache:                     # optional — background-refresh, serve last result instantly
+      refresh_interval_ms: 60000   # not allowed on destructive tools or pipelines
 ```
 
 ## License
