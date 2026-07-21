@@ -1,15 +1,5 @@
-mod adapters;
-mod cli;
-mod config;
-mod errors;
-mod mcp;
-mod observability;
-mod runtime;
-mod supervisor;
-mod template;
-
 use clap::Parser;
-use cli::Cli;
+use mcpify::cli::{self, Cli};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

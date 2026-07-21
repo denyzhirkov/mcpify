@@ -24,3 +24,6 @@ notify-debouncer-mini = "0.5"
 
 [dev-dependencies]
 tempfile = "3"
+# Client feature enables the in-memory MCP client used by the tests/ harness to
+# drive a real client<->server round-trip (elicitation, list_changed, pipeline).
+rmcp = { version = "1", features = ["client"] }
